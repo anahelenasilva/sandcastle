@@ -1,16 +1,24 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DOCKERFILE, SKELETON_PROMPT } from "./templates.js";
-
-const ENV_EXAMPLE = `CLAUDE_CODE_OAUTH_TOKEN=
-GH_TOKEN=
-`;
+import type { AgentProvider } from "./AgentProvider.js";
+import { SKELETON_PROMPT } from "./templates.js";
 
 const GITIGNORE = `.env
 patches/
 `;
 
-export async function scaffold(repoDir: string): Promise<void> {
+function buildEnvExample(envManifest: Record<string, string>): string {
+  return (
+    Object.entries(envManifest)
+      .map(([key, comment]) => `# ${comment}\n${key}=`)
+      .join("\n") + "\n"
+  );
+}
+
+export async function scaffold(
+  repoDir: string,
+  provider: AgentProvider,
+): Promise<void> {
   const configDir = join(repoDir, ".sandcastle");
 
   try {
@@ -25,9 +33,16 @@ export async function scaffold(repoDir: string): Promise<void> {
   }
 
   await Promise.all([
-    writeFile(join(configDir, "Dockerfile"), DOCKERFILE),
+    writeFile(join(configDir, "Dockerfile"), provider.dockerfileTemplate),
     writeFile(join(configDir, "prompt.md"), SKELETON_PROMPT),
-    writeFile(join(configDir, ".env.example"), ENV_EXAMPLE),
+    writeFile(
+      join(configDir, ".env.example"),
+      buildEnvExample(provider.envManifest),
+    ),
     writeFile(join(configDir, ".gitignore"), GITIGNORE),
+    writeFile(
+      join(configDir, "config.json"),
+      JSON.stringify({ agent: provider.name }, null, 2) + "\n",
+    ),
   ]);
 }

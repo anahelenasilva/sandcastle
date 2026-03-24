@@ -91,7 +91,7 @@ const initCommand = Command.make(
 
       yield* Console.log("Scaffolding .sandcastle/ config directory...");
       yield* Effect.tryPromise({
-        try: () => scaffold(cwd),
+        try: () => scaffold(cwd, provider),
         catch: (e) =>
           new InitError({
             message: `${e instanceof Error ? e.message : e}`,
