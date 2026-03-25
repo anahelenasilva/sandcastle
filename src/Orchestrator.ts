@@ -128,7 +128,11 @@ const formatUsageRows = (
 
   const contextWindow = MODEL_CONTEXT_WINDOWS[model];
   if (contextWindow) {
-    rows.Context = `${((usage.input_tokens / contextWindow) * 100).toFixed(1)}%`;
+    const contextTokens =
+      usage.input_tokens +
+      usage.cache_read_input_tokens +
+      usage.cache_creation_input_tokens;
+    rows.Context = `${((contextTokens / contextWindow) * 100).toFixed(1)}%`;
   }
 
   rows.Cost = `$${usage.total_cost_usd.toFixed(2)}`;
