@@ -9,7 +9,7 @@ import { Display } from "./Display.js";
 import { DEFAULT_MODEL } from "./Orchestrator.js";
 import { buildImage, removeImage } from "./DockerLifecycle.js";
 import { scaffold } from "./InitService.js";
-import { run } from "./run.js";
+import { defaultImageName, run } from "./run.js";
 import { getAgentProvider } from "./AgentProvider.js";
 import { AgentError, ConfigDirError, InitError } from "./errors.js";
 import {
@@ -27,15 +27,14 @@ const imageNameOption = Options.text("image-name").pipe(
   Options.optional,
 );
 
-const DEFAULT_IMAGE_NAME = "sandcastle:local";
-
 const resolveImageName = (
   cliFlag: import("effect").Option.Option<string>,
+  cwd: string,
   config?: import("./Config.js").SandcastleConfig,
 ): string =>
   cliFlag._tag === "Some"
     ? cliFlag.value
-    : (config?.imageName ?? DEFAULT_IMAGE_NAME);
+    : (config?.imageName ?? defaultImageName(cwd));
 
 const agentOption = Options.text("agent").pipe(
   Options.withDescription("Agent provider to use (e.g. claude-code)"),
@@ -67,7 +66,7 @@ const initCommand = Command.make(
     Effect.gen(function* () {
       const d = yield* Display;
       const cwd = process.cwd();
-      const imageName = resolveImageName(imageNameFlag);
+      const imageName = resolveImageName(imageNameFlag, cwd);
 
       // Resolve agent provider: CLI flag > default
       const agentName = agent._tag === "Some" ? agent.value : "claude-code";
@@ -136,7 +135,7 @@ const buildImageCommand = Command.make(
       yield* requireConfigDir(cwd);
 
       const config = yield* readConfig(cwd);
-      const imageName = resolveImageName(imageNameFlag, config);
+      const imageName = resolveImageName(imageNameFlag, cwd, config);
 
       const dockerfileDir = join(cwd, CONFIG_DIR);
       const dockerfilePath =
@@ -165,7 +164,7 @@ const removeImageCommand = Command.make(
       const cwd = process.cwd();
 
       const config = yield* readConfig(cwd);
-      const imageName = resolveImageName(imageNameFlag, config);
+      const imageName = resolveImageName(imageNameFlag, cwd, config);
 
       yield* d.spinner(
         `Removing Docker image '${imageName}'...`,
@@ -264,7 +263,11 @@ const runCommand = Command.make(
       const resolvedBranch = branch._tag === "Some" ? branch.value : undefined;
       const resolvedModel = model._tag === "Some" ? model.value : undefined;
       const resolvedAgent = agent._tag === "Some" ? agent.value : undefined;
-      const resolvedImageName = resolveImageName(imageNameFlag, config);
+      const resolvedImageName = resolveImageName(
+        imageNameFlag,
+        hostRepoDir,
+        config,
+      );
 
       const resolvedPromptArgs =
         promptArgs._tag === "Some"
@@ -413,7 +416,7 @@ const interactiveCommand = Command.make(
 
       // Resolve agent provider: CLI flag > config > default
       const config = yield* readConfig(hostRepoDir);
-      const imageName = resolveImageName(imageNameFlag, config);
+      const imageName = resolveImageName(imageNameFlag, hostRepoDir, config);
       const agentName =
         agent._tag === "Some" ? agent.value : (config.agent ?? "claude-code");
       const provider = yield* Effect.try({

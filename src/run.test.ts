@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildLogFilename,
+  defaultImageName,
   sanitizeBranchForFilename,
   USE_WORKTREE_MODE,
   type RunOptions,
@@ -75,6 +76,30 @@ describe("sanitizeBranchForFilename", () => {
     expect(
       sanitizeBranchForFilename("sandcastle/issue-87-log-file-branch-name"),
     ).toBe("sandcastle-issue-87-log-file-branch-name");
+  });
+});
+
+describe("defaultImageName", () => {
+  it("returns sandcastle:<dir-name> for a typical repo path", () => {
+    expect(defaultImageName("/home/user/my-project")).toBe(
+      "sandcastle:my-project",
+    );
+  });
+
+  it("lowercases the directory name", () => {
+    expect(defaultImageName("/home/user/MyProject")).toBe(
+      "sandcastle:myproject",
+    );
+  });
+
+  it("replaces characters invalid in Docker image tags with dashes", () => {
+    expect(defaultImageName("/home/user/my project")).toBe(
+      "sandcastle:my-project",
+    );
+  });
+
+  it("handles paths with trailing slash gracefully", () => {
+    expect(defaultImageName("/home/user/my-repo/")).toBe("sandcastle:my-repo");
   });
 });
 

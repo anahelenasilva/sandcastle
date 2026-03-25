@@ -25,6 +25,17 @@ export const sanitizeBranchForFilename = (branch: string): string =>
   branch.replace(/[/\\:*?"<>|]/g, "-");
 
 /**
+ * Derive the default Docker image name from the repo directory.
+ * Returns `sandcastle:<dir-name>` where dir-name is the last path segment,
+ * lowercased and sanitized for Docker image tag rules.
+ */
+export const defaultImageName = (repoDir: string): string => {
+  const dirName = repoDir.replace(/\/+$/, "").split("/").pop() ?? "local";
+  const sanitized = dirName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-");
+  return `sandcastle:${sanitized}`;
+};
+
+/**
  * Build the log filename for a run.
  * When a targetBranch is provided (temp branch mode), prefixes the filename
  * with the sanitized target branch name so developers can identify which
@@ -63,7 +74,7 @@ export interface RunOptions {
   readonly model?: string;
   /** Agent provider name (default: claude-code) */
   readonly agent?: string;
-  /** Docker image name to use for the sandbox (default: sandcastle:local) */
+  /** Docker image name to use for the sandbox (default: sandcastle:<repo-dir-name>) */
   readonly imageName?: string;
   /** Key-value map for {{KEY}} placeholder substitution in prompts */
   readonly promptArgs?: PromptArgs;
@@ -129,7 +140,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
 
   // Resolve image name: explicit option > config > default
   const resolvedImageName =
-    options.imageName ?? config.imageName ?? "sandcastle:local";
+    options.imageName ?? config.imageName ?? defaultImageName(hostRepoDir);
 
   // Resolve env vars and run agent provider's env check
   const env = await resolveEnv(hostRepoDir);
