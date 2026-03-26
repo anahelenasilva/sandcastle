@@ -37,13 +37,12 @@ sandcastle remove-image
 
 Tokens are resolved automatically from environment files and process environment variables. No CLI flags needed.
 
-| Variable                  | Purpose                                  |
-| ------------------------- | ---------------------------------------- |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token                  |
-| `ANTHROPIC_API_KEY`       | Anthropic API key (alternative to OAuth) |
-| `GH_TOKEN`                | GitHub personal access token             |
+| Variable            | Purpose                      |
+| ------------------- | ---------------------------- |
+| `ANTHROPIC_API_KEY` | Anthropic API key            |
+| `GH_TOKEN`          | GitHub personal access token |
 
-You must set either `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` (or both). `GH_TOKEN` is always required.
+Both `ANTHROPIC_API_KEY` and `GH_TOKEN` are required.
 
 **Precedence** (highest to lowest):
 
@@ -273,7 +272,7 @@ console.log(result.branch); // target branch name
 | `branch`                      | string      | Target branch name                                 |
 | `logFilePath`                 | string?     | Path to the log file (only when logging to a file) |
 
-Tokens (`CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`, `GH_TOKEN`) are resolved automatically from `.env`, `.sandcastle/.env`, and `process.env` — no need to pass them to the API.
+Tokens (`ANTHROPIC_API_KEY`, `GH_TOKEN`) are resolved automatically from `.env`, `.sandcastle/.env`, and `process.env` — no need to pass them to the API.
 
 ## Configuration
 

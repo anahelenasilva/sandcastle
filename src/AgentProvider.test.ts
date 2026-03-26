@@ -6,8 +6,8 @@ describe("claudeCodeProvider", () => {
     expect(claudeCodeProvider.name).toBe("claude-code");
   });
 
-  it("envManifest contains CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, and GH_TOKEN", () => {
-    expect(claudeCodeProvider.envManifest).toHaveProperty(
+  it("envManifest contains ANTHROPIC_API_KEY and GH_TOKEN but NOT CLAUDE_CODE_OAUTH_TOKEN", () => {
+    expect(claudeCodeProvider.envManifest).not.toHaveProperty(
       "CLAUDE_CODE_OAUTH_TOKEN",
     );
     expect(claudeCodeProvider.envManifest).toHaveProperty("ANTHROPIC_API_KEY");
@@ -21,16 +21,7 @@ describe("claudeCodeProvider", () => {
 });
 
 describe("claudeCodeProvider.envCheck", () => {
-  it("passes with CLAUDE_CODE_OAUTH_TOKEN and GH_TOKEN", () => {
-    expect(() =>
-      claudeCodeProvider.envCheck({
-        CLAUDE_CODE_OAUTH_TOKEN: "tok",
-        GH_TOKEN: "gh",
-      }),
-    ).not.toThrow();
-  });
-
-  it("passes with ANTHROPIC_API_KEY instead of CLAUDE_CODE_OAUTH_TOKEN", () => {
+  it("passes with ANTHROPIC_API_KEY and GH_TOKEN", () => {
     expect(() =>
       claudeCodeProvider.envCheck({
         ANTHROPIC_API_KEY: "key",
@@ -39,25 +30,24 @@ describe("claudeCodeProvider.envCheck", () => {
     ).not.toThrow();
   });
 
-  it("passes when both CLAUDE_CODE_OAUTH_TOKEN and ANTHROPIC_API_KEY present", () => {
-    expect(() =>
-      claudeCodeProvider.envCheck({
-        CLAUDE_CODE_OAUTH_TOKEN: "tok",
-        ANTHROPIC_API_KEY: "key",
-        GH_TOKEN: "gh",
-      }),
-    ).not.toThrow();
-  });
-
-  it("throws when neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY present", () => {
+  it("throws when ANTHROPIC_API_KEY is missing", () => {
     expect(() => claudeCodeProvider.envCheck({ GH_TOKEN: "gh" })).toThrow(
-      /CLAUDE_CODE_OAUTH_TOKEN.*ANTHROPIC_API_KEY/,
+      /ANTHROPIC_API_KEY/,
     );
+  });
+
+  it("throws when CLAUDE_CODE_OAUTH_TOKEN is present but ANTHROPIC_API_KEY is absent", () => {
+    expect(() =>
+      claudeCodeProvider.envCheck({
+        CLAUDE_CODE_OAUTH_TOKEN: "tok",
+        GH_TOKEN: "gh",
+      }),
+    ).toThrow(/ANTHROPIC_API_KEY/);
   });
 
   it("throws when GH_TOKEN is missing", () => {
     expect(() =>
-      claudeCodeProvider.envCheck({ CLAUDE_CODE_OAUTH_TOKEN: "tok" }),
+      claudeCodeProvider.envCheck({ ANTHROPIC_API_KEY: "key" }),
     ).toThrow(/GH_TOKEN/);
   });
 

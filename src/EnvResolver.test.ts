@@ -16,12 +16,12 @@ describe("resolveEnv", () => {
     const dir = await makeDir();
     await writeFile(
       join(dir, ".env"),
-      "CLAUDE_CODE_OAUTH_TOKEN=root-oauth\nGH_TOKEN=root-gh\nCUSTOM_VAR=hello\n",
+      "ANTHROPIC_API_KEY=root-key\nGH_TOKEN=root-gh\nCUSTOM_VAR=hello\n",
     );
 
     const env = await runResolveEnv(dir);
     expect(env).toEqual({
-      CLAUDE_CODE_OAUTH_TOKEN: "root-oauth",
+      ANTHROPIC_API_KEY: "root-key",
       GH_TOKEN: "root-gh",
       CUSTOM_VAR: "hello",
     });
@@ -32,12 +32,12 @@ describe("resolveEnv", () => {
     await mkdir(join(dir, ".sandcastle"));
     await writeFile(
       join(dir, ".sandcastle", ".env"),
-      "CLAUDE_CODE_OAUTH_TOKEN=sc-oauth\nGH_TOKEN=sc-gh\n",
+      "ANTHROPIC_API_KEY=sc-key\nGH_TOKEN=sc-gh\n",
     );
 
     const env = await runResolveEnv(dir);
     expect(env).toEqual({
-      CLAUDE_CODE_OAUTH_TOKEN: "sc-oauth",
+      ANTHROPIC_API_KEY: "sc-key",
       GH_TOKEN: "sc-gh",
     });
   });
@@ -46,16 +46,16 @@ describe("resolveEnv", () => {
     const dir = await makeDir();
     await writeFile(
       join(dir, ".env"),
-      "CLAUDE_CODE_OAUTH_TOKEN=root-oauth\nGH_TOKEN=root-gh\n",
+      "ANTHROPIC_API_KEY=root-key\nGH_TOKEN=root-gh\n",
     );
     await mkdir(join(dir, ".sandcastle"));
     await writeFile(
       join(dir, ".sandcastle", ".env"),
-      "CLAUDE_CODE_OAUTH_TOKEN=sc-oauth\nGH_TOKEN=sc-gh\n",
+      "ANTHROPIC_API_KEY=sc-key\nGH_TOKEN=sc-gh\n",
     );
 
     const env = await runResolveEnv(dir);
-    expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("root-oauth");
+    expect(env["ANTHROPIC_API_KEY"]).toBe("root-key");
     expect(env["GH_TOKEN"]).toBe("root-gh");
   });
 
@@ -136,7 +136,7 @@ describe("resolveEnv", () => {
 
   it("does no validation — returns whatever keys are present", async () => {
     const dir = await makeDir();
-    // Only custom keys, no CLAUDE_CODE_OAUTH_TOKEN or GH_TOKEN
+    // Only custom keys, no ANTHROPIC_API_KEY or GH_TOKEN
     await writeFile(
       join(dir, ".env"),
       "NPM_TOKEN=npm123\nDATABASE_URL=pg://localhost\n",

@@ -52,17 +52,14 @@ export const claudeCodeProvider: AgentProvider = {
   name: "claude-code",
 
   envManifest: {
-    CLAUDE_CODE_OAUTH_TOKEN:
-      "Claude Code OAuth token (or use ANTHROPIC_API_KEY instead)",
-    ANTHROPIC_API_KEY:
-      "Anthropic API key (alternative to CLAUDE_CODE_OAUTH_TOKEN)",
+    ANTHROPIC_API_KEY: "Anthropic API key",
     GH_TOKEN: "GitHub personal access token",
   },
 
   envCheck(env: Record<string, string>): void {
-    if (!env["CLAUDE_CODE_OAUTH_TOKEN"] && !env["ANTHROPIC_API_KEY"]) {
+    if (!env["ANTHROPIC_API_KEY"]) {
       throw new Error(
-        "Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY found. Set one in .env, .sandcastle/.env, or as an environment variable.",
+        "ANTHROPIC_API_KEY not found. Set it in .env, .sandcastle/.env, or as an environment variable.",
       );
     }
     if (!env["GH_TOKEN"]) {

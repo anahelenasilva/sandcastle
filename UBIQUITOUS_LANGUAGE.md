@@ -81,7 +81,7 @@
 
 > **Dev:** "What if I want to add support for OpenCode instead of Claude Code?"
 
-> **Domain expert:** "Create a new **agent provider**. It declares its own **env manifest** — maybe it needs `OPEN_CODE_TOKEN` instead of `CLAUDE_CODE_OAUTH_TOKEN`. Its **env check** validates those requirements. And it provides its own Dockerfile template that installs the right binary."
+> **Domain expert:** "Create a new **agent provider**. It declares its own **env manifest** — maybe it needs `OPEN_CODE_API_KEY` instead of `ANTHROPIC_API_KEY`. Its **env check** validates those requirements. And it provides its own Dockerfile template that installs the right binary."
 
 > **Dev:** "How does Sandcastle know which **agent provider** to use?"
 

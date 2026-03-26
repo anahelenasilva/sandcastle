@@ -76,7 +76,7 @@ describe("InitService scaffold", () => {
     expect(dockerfile).toBe(claudeCodeProvider.dockerfileTemplate);
 
     const envExample = await readFile(join(configDir, ".env.example"), "utf-8");
-    expect(envExample).toContain("CLAUDE_CODE_OAUTH_TOKEN=");
+    expect(envExample).toContain("ANTHROPIC_API_KEY=");
     expect(envExample).toContain("GH_TOKEN=");
   });
 
