@@ -25,9 +25,20 @@ sandcastle init
 # 2. Set up authentication tokens in .sandcastle/.env
 cp .sandcastle/.env.example .sandcastle/.env
 # Edit .sandcastle/.env and fill in your tokens
+```
 
-# 3. Run the agent against your repo's open issues (defaults to 5 iterations)
-sandcastle run
+```typescript
+// 3. Run the agent via the JS API
+import { run } from "@ai-hero/sandcastle";
+
+await run({
+  promptFile: ".sandcastle/prompt.md",
+  maxIterations: 5,
+});
+```
+
+```bash
+npx tsx main.ts
 
 # 4. Clean up when you're done
 sandcastle remove-image
@@ -83,32 +94,6 @@ Rebuilds the Docker image from an existing `.sandcastle/` directory. Use this af
 | `--image-name` | No       | `sandcastle:local` | Docker image name                                                                 |
 | `--dockerfile` | No       | —                  | Path to a custom Dockerfile (build context will be the current working directory) |
 
-### `sandcastle run`
-
-Runs the orchestration loop: sync-in, invoke agent, sync-out, repeat.
-
-| Option                 | Required | Default                       | Description                                                         |
-| ---------------------- | -------- | ----------------------------- | ------------------------------------------------------------------- |
-| `--iterations`         | No       | `5`                           | Number of agent iterations to run                                   |
-| `--image-name`         | No       | `sandcastle:local`            | Docker image name                                                   |
-| `--prompt`             | No       | —                             | Inline prompt string (mutually exclusive with --prompt-file)        |
-| `--prompt-file`        | No       | `.sandcastle/prompt.md`       | Path to the agent prompt file                                       |
-| `--branch`             | No       | —                             | Target branch name for sandbox work                                 |
-| `--model`              | No       | `claude-opus-4-6`             | Model to use for the agent                                          |
-| `--agent`              | No       | `claude-code`                 | Agent provider to use                                               |
-| `--prompt-arg KEY=VAL` | No       | —                             | Repeatable. Sets a `{{KEY}}` prompt argument (see Prompt arguments) |
-| `--completion-signal`  | No       | `<promise>COMPLETE</promise>` | Custom string the agent emits to stop the iteration loop early      |
-| `--timeout`            | No       | `900`                         | Timeout for the entire run in seconds (15 min default)              |
-
-Each iteration:
-
-1. Syncs your host repo into the container (via git bundle)
-2. Runs lifecycle hooks (`onSandboxReady`)
-3. Preprocesses the prompt (executes any `` !`command` `` expressions inside the sandbox)
-4. Invokes the agent (Claude Code) with streaming output
-5. If the agent made commits, syncs them back to your host (via format-patch)
-6. Stops early if the agent emits `<promise>COMPLETE</promise>`
-
 ### `sandcastle interactive`
 
 Opens an interactive Claude Code session inside the sandbox. Syncs your repo in, launches Claude with TTY passthrough, and syncs changes back when you exit.
@@ -135,11 +120,11 @@ Sandcastle uses a flexible prompt system. You write the prompt, and the engine e
 
 The prompt is resolved from one of three sources (in order of precedence):
 
-1. `--prompt "inline string"` — pass an inline prompt directly
-2. `--prompt-file ./path/to/prompt.md` — point to a specific file
+1. `prompt: "inline string"` — pass an inline prompt directly via `RunOptions`
+2. `promptFile: "./path/to/prompt.md"` — point to a specific file via `RunOptions`
 3. `.sandcastle/prompt.md` — default location (created by `sandcastle init`)
 
-`--prompt` and `--prompt-file` are mutually exclusive — providing both is an error.
+`prompt` and `promptFile` are mutually exclusive — providing both is an error.
 
 ### Dynamic context with `` !`command` ``
 
@@ -223,7 +208,7 @@ If the task is not complete, leave a comment on the issue describing progress.
 Only work on a single issue per run.
 ```
 
-Save this as `.sandcastle/prompt.md` and run `sandcastle run`.
+Save this as `.sandcastle/prompt.md` and invoke it via the JS API (see [Node API](#node-api) below).
 
 ## Node API
 
@@ -318,7 +303,7 @@ Place a `.sandcastle/config.json` file to configure advanced behavior:
 | ---------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `agent`                | string | Agent provider name. Created by `sandcastle init`. Overridden by `--agent` CLI flag. Defaults to `claude-code`.              |
 | `hooks`                | object | Lifecycle hooks that run commands inside the sandbox. See below.                                                             |
-| `defaultMaxIterations` | number | Default number of agent iterations for `sandcastle run`. Overridden by the `--iterations` CLI flag. Defaults to 5 if unset.  |
+| `defaultMaxIterations` | number | Default number of agent iterations. Overridden by the `maxIterations` option in `run()`. Defaults to 5 if unset.             |
 | `model`                | string | Default model for the agent (e.g. `claude-sonnet-4-6`). Overridden by the `--model` CLI flag. Defaults to `claude-opus-4-6`. |
 | `imageName`            | string | Default Docker image name. Overridden by `--image-name` CLI flag. Defaults to `sandcastle:local`.                            |
 

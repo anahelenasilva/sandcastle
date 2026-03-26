@@ -21,7 +21,7 @@
 
 | Term                             | Definition                                                                                                                           | Aliases to avoid                                                                         |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| **Iteration**                    | A single invocation of the agent inside the sandbox, producing at most one commit against one task                                   | "run" (ambiguous with the CLI command), "cycle", "loop"                                  |
+| **Iteration**                    | A single invocation of the agent inside the sandbox, producing at most one commit against one task                                   | "run" (ambiguous with the JS `run()` function), "cycle", "loop"                          |
 | **Task**                         | A GitHub issue that the agent selects and works on during an iteration                                                               | "job", "work item", "ticket"                                                             |
 | **Completion signal**            | The `<promise>COMPLETE</promise>` marker in the agent's output indicating all actionable tasks are finished                          | "done flag", "exit signal"                                                               |
 | **Orchestrator**                 | The module that drives the iteration loop: invoke agent, check for commits, check completion signal, repeat                          | "runner", "loop", "wrapper script"                                                       |
@@ -73,7 +73,7 @@
 - **Prompt argument substitution** runs before **prompt expansion**, so **prompt arguments** can inject values into **shell expressions**
 - A `{{KEY}}` placeholder with no matching **prompt argument** is an error; unused **prompt arguments** produce a warning
 - A **prompt** may contain zero or more **prompt arguments** and/or **shell expressions**; each substitution step is skipped if there are no matches
-- **Log-to-file mode** is the default for programmatic use via `run()`; **terminal mode** is the default for the `sandcastle run` CLI command
+- **Log-to-file mode** is the default for programmatic use via `run()`; **terminal mode** is used when passing `logging: { type: 'stdout' }` to `run()`
 - In **log-to-file mode**, Sandcastle writes a **run log** to `.sandcastle/logs/` and prints a `tail -f` command to the console so the developer can follow along
 - In **terminal mode**, Sandcastle renders spinners, styled status messages, and summaries directly in the terminal
 
@@ -108,8 +108,8 @@
 - **"Docker sandbox"** — In this project, **sandbox** refers to our isolated environment concept. It is NOT Claude Code's built-in `docker sandbox` CLI feature. Use **sandbox** for ours; spell out "Claude's Docker sandbox CLI" for the built-in feature.
 - **"Container"** vs **"Sandbox"** — "Container" is the Docker primitive; **sandbox** is our abstraction over it. Use **sandbox** when talking about the concept, "container" only when discussing Docker implementation details.
 - **"Local"** vs **"Host"** — Both could mean the developer's machine, but "local" is ambiguous (the **worktree** is also on a local filesystem). Use **host** to mean the developer's machine. Reserve "local" for generic contexts.
-- **"Run"** — Ambiguous between the CLI command (`sandcastle run`) and a single **iteration**. Use **iteration** for one agent invocation; use "run command" or "run session" for the CLI command that drives multiple iterations.
+- **"Run"** — Can mean the JS `run()` function or a single **iteration**. Use **iteration** for one agent invocation; use "run session" for a call to `run()` that drives multiple iterations.
 - **"Token"** vs **"Env var"** — The old `TokenResolver` name implied it only handled auth tokens. The **env resolver** handles all environment variables generically. Use "env var" for the general concept; "token" only when referring specifically to an auth credential value.
-- **"Command"** — Heavily overloaded: hook commands, shell commands, CLI commands, **shell expressions**. Use **shell expression** for the `` !`...` `` syntax in **prompts**; use "hook" for lifecycle hooks; use "CLI command" for `sandcastle run`, `sandcastle init`, etc.
+- **"Command"** — Heavily overloaded: hook commands, shell commands, CLI commands, **shell expressions**. Use **shell expression** for the `` !`...` `` syntax in **prompts**; use "hook" for lifecycle hooks; use "CLI command" for `sandcastle init`, `sandcastle build-image`, etc.
 - **"Variable"** vs **"Argument"** — Env vars and **prompt arguments** are both key-value pairs, but they serve different purposes. **Prompt arguments** are host-side values substituted into `{{KEY}}` placeholders. Env vars are passed into the **sandbox** environment. Don't call prompt arguments "variables" or "template variables".
 - **"File mode"** vs **"Log-to-file mode"** — Use **log-to-file mode** to be explicit about what's happening. "File mode" is too terse and could be confused with other file operations. Similarly, avoid "stdout mode" for **terminal mode** — stdout is an implementation detail, not the user-facing concept.
