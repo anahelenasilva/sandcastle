@@ -210,9 +210,9 @@ Select a template during `sandcastle init` when prompted, or re-run init in a fr
 
 Scaffolds the `.sandcastle/` config directory and builds the Docker image. This is the first command you run in a new repo.
 
-| Option         | Required | Default            | Description       |
-| -------------- | -------- | ------------------ | ----------------- |
-| `--image-name` | No       | `sandcastle:local` | Docker image name |
+| Option         | Required | Default                      | Description       |
+| -------------- | -------- | ---------------------------- | ----------------- |
+| `--image-name` | No       | `sandcastle:<repo-dir-name>` | Docker image name |
 
 Creates the following files:
 
@@ -230,27 +230,27 @@ Errors if `.sandcastle/` already exists to prevent overwriting customizations.
 
 Rebuilds the Docker image from an existing `.sandcastle/` directory. Use this after modifying the Dockerfile.
 
-| Option         | Required | Default            | Description                                                                       |
-| -------------- | -------- | ------------------ | --------------------------------------------------------------------------------- |
-| `--image-name` | No       | `sandcastle:local` | Docker image name                                                                 |
-| `--dockerfile` | No       | —                  | Path to a custom Dockerfile (build context will be the current working directory) |
+| Option         | Required | Default                      | Description                                                                       |
+| -------------- | -------- | ---------------------------- | --------------------------------------------------------------------------------- |
+| `--image-name` | No       | `sandcastle:<repo-dir-name>` | Docker image name                                                                 |
+| `--dockerfile` | No       | —                            | Path to a custom Dockerfile (build context will be the current working directory) |
 
 ### `sandcastle interactive`
 
 Opens an interactive Claude Code session inside the sandbox. Creates a worktree, bind-mounts it into the sandbox, launches Claude with TTY passthrough, and merges commits back when you exit.
 
-| Option         | Required | Default            | Description                |
-| -------------- | -------- | ------------------ | -------------------------- |
-| `--image-name` | No       | `sandcastle:local` | Docker image name          |
-| `--model`      | No       | `claude-opus-4-6`  | Model to use for the agent |
+| Option         | Required | Default                      | Description                |
+| -------------- | -------- | ---------------------------- | -------------------------- |
+| `--image-name` | No       | `sandcastle:<repo-dir-name>` | Docker image name          |
+| `--model`      | No       | `claude-opus-4-6`            | Model to use for the agent |
 
 ### `sandcastle remove-image`
 
 Removes the Docker image.
 
-| Option         | Required | Default            | Description       |
-| -------------- | -------- | ------------------ | ----------------- |
-| `--image-name` | No       | `sandcastle:local` | Docker image name |
+| Option         | Required | Default                      | Description       |
+| -------------- | -------- | ---------------------------- | ----------------- |
+| `--image-name` | No       | `sandcastle:<repo-dir-name>` | Docker image name |
 
 ### `RunOptions`
 
