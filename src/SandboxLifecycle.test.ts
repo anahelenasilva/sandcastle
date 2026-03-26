@@ -283,7 +283,7 @@ describe("withSandboxLifecycle (worktree mode)", () => {
     expect(stdout.trim()).toBe("");
   });
 
-  it("preserves temp branch and throws on fast-forward failure", async () => {
+  it("preserves temp branch and throws on merge conflict", async () => {
     const { hostDir, worktreeDir, layer } = await setupWorktree();
 
     await expect(
@@ -316,13 +316,62 @@ describe("withSandboxLifecycle (worktree mode)", () => {
             }),
         ).pipe(Effect.provide(Layer.merge(layer, testDisplayLayer))),
       ),
-    ).rejects.toThrow(/fast-forward merge/i);
+    ).rejects.toThrow(/merge.*failed/i);
 
     // Temp branch should still exist for recovery
     const { stdout } = await execAsync('git branch --list "sandcastle/test"', {
       cwd: hostDir,
     });
     expect(stdout.trim()).toBeTruthy();
+  });
+
+  it("succeeds with merge commit when host branch has diverged (non-conflicting)", async () => {
+    const { hostDir, worktreeDir, layer } = await setupWorktree();
+
+    await Effect.runPromise(
+      withSandboxLifecycle(
+        {
+          hostRepoDir: hostDir,
+          sandboxRepoDir: worktreeDir,
+        },
+        (ctx) =>
+          Effect.gen(function* () {
+            yield* ctx.sandbox.exec('git config user.email "test@test.com"', {
+              cwd: ctx.sandboxRepoDir,
+            });
+            yield* ctx.sandbox.exec('git config user.name "Test"', {
+              cwd: ctx.sandboxRepoDir,
+            });
+            // Commit a change to a new file in the worktree
+            yield* ctx.sandbox.exec(
+              'sh -c "echo worktree-content > worktree-file.txt && git add worktree-file.txt && git commit -m \\"worktree change\\""',
+              { cwd: ctx.sandboxRepoDir },
+            );
+            // Commit a non-conflicting change to a different file on main directly
+            yield* Effect.promise(async () => {
+              await execAsync(
+                'sh -c "echo main-content > main-file.txt && git add main-file.txt && git commit -m \\"main change\\""',
+                { cwd: hostDir },
+              );
+            });
+          }),
+      ).pipe(Effect.provide(Layer.merge(layer, testDisplayLayer))),
+    );
+
+    // Both files should exist on main after the merge
+    const worktreeFile = await readFile(
+      join(hostDir, "worktree-file.txt"),
+      "utf8",
+    );
+    const mainFile = await readFile(join(hostDir, "main-file.txt"), "utf8");
+    expect(worktreeFile.trim()).toBe("worktree-content");
+    expect(mainFile.trim()).toBe("main-content");
+
+    // Temp branch should be deleted
+    const { stdout } = await execAsync('git branch --list "sandcastle/test"', {
+      cwd: hostDir,
+    });
+    expect(stdout.trim()).toBe("");
   });
 
   it("cherry-pick works when sandboxRepoDir differs from host worktree path", async () => {

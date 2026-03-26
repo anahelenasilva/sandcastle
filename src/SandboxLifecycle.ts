@@ -152,11 +152,11 @@ export const withSandboxLifecycle = <A>(
     const hostSideWorktreePath = hostWorktreePath ?? sandboxRepoDir;
 
     if (hostCurrentBranch !== null) {
-      // Temp branch mode: fast-forward host branch to temp branch, then delete temp branch.
-      // We use fast-forward instead of cherry-pick because cherry-pick breaks when the
+      // Temp branch mode: merge temp branch into host branch, then delete temp branch.
+      // We use merge instead of cherry-pick because cherry-pick breaks when the
       // temp branch contains merge commits (e.g. a merge agent merging multiple parallel
-      // branches). The temp branch is always a direct descendant of hostCurrentBranch,
-      // so fast-forward is always valid.
+      // branches). A regular merge handles both the fast-forward case (host branch hasn't
+      // moved) and the diverged case (host branch has new commits since the worktree started).
 
       // Check if there are any new commits on the temp branch
       const hasNewCommits = yield* Effect.promise(async () => {
@@ -179,14 +179,14 @@ export const withSandboxLifecycle = <A>(
         yield* Effect.tryPromise({
           try: async () => {
             try {
-              await execAsync(`git merge --ff-only "${resolvedBranch}"`, {
+              await execAsync(`git merge "${resolvedBranch}"`, {
                 cwd: hostRepoDir,
               });
             } catch {
               throw new Error(
-                `Fast-forward merge of '${resolvedBranch}' onto '${hostCurrentBranch}' failed. ` +
+                `Merge of '${resolvedBranch}' onto '${hostCurrentBranch}' failed. ` +
                   `The temporary branch '${resolvedBranch}' has been preserved. ` +
-                  `To retry: git merge --ff-only ${resolvedBranch}, ` +
+                  `To retry: git merge ${resolvedBranch}, ` +
                   `then clean up: git branch -D ${resolvedBranch}`,
               );
             }
