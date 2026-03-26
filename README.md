@@ -236,15 +236,6 @@ Rebuilds the Docker image from an existing `.sandcastle/` directory. Use this af
 | `--image-name` | No       | `sandcastle:local` | Docker image name                                                                 |
 | `--dockerfile` | No       | —                  | Path to a custom Dockerfile (build context will be the current working directory) |
 
-### `sandcastle interactive`
-
-Opens an interactive Claude Code session inside the sandbox. Creates a worktree, bind-mounts it into the sandbox, launches Claude with TTY passthrough, and merges commits back when you exit.
-
-| Option         | Required | Default            | Description                |
-| -------------- | -------- | ------------------ | -------------------------- |
-| `--image-name` | No       | `sandcastle:local` | Docker image name          |
-| `--model`      | No       | `claude-opus-4-6`  | Model to use for the agent |
-
 ### `sandcastle remove-image`
 
 Removes the Docker image.
