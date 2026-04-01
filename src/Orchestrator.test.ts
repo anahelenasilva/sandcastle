@@ -1816,7 +1816,7 @@ describe("Orchestrator Display integration", () => {
     ).toBe(true);
   });
 
-  it("uses 20 minutes as the default timeout", async () => {
+  it("uses 5 minutes as the default idle timeout", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-timeout-default-"));
 
     await initRepo(hostDir);
@@ -1827,23 +1827,22 @@ describe("Orchestrator Display integration", () => {
       (dir) => makeMockAgentLayer(dir, async () => "done"),
     );
 
-    // Capture the timeoutSeconds actually used by spying on orchestrate options
-    // We verify indirectly: a run that completes quickly should not time out,
-    // and the error message for a forced timeout should reflect 1200 seconds.
+    // Verify indirectly: a run that completes quickly should not time out.
+    // The default idle timeout is 300s (5 minutes) — far longer than any mock agent delay.
     const exitResult = await Effect.runPromise(
       orchestrate({
         hostRepoDir: hostDir,
         sandboxRepoDir,
         iterations: 1,
         prompt: "test",
-        // No timeoutSeconds — should default to 20 minutes (1200s)
+        // No idleTimeoutSeconds — should default to 5 minutes (300s)
       }).pipe(
         Effect.provide(Layer.merge(factoryLayer, testDisplayLayer)),
         Effect.exit,
       ),
     );
 
-    // The run completes successfully — default timeout is large enough
+    // The run completes successfully — default idle timeout is large enough
     expect(exitResult._tag).toBe("Success");
   }, 10_000);
 
@@ -1920,13 +1919,13 @@ describe("Orchestrator Display integration", () => {
     expect(statusEntries.every((e) => !e.message.startsWith("["))).toBe(true);
   });
 
-  it("fails with TimeoutError when timeoutSeconds is exceeded", async () => {
+  it("fails with TimeoutError when idleTimeoutSeconds is exceeded with no output", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-timeout-"));
 
     await initRepo(hostDir);
     await commitFile(hostDir, "hello.txt", "hello", "initial commit");
 
-    // Mock agent: takes 2 seconds to respond
+    // Mock agent: takes 2 seconds to respond and produces no output during that time
     const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
       hostDir,
       (dir) =>
@@ -1942,7 +1941,7 @@ describe("Orchestrator Display integration", () => {
         sandboxRepoDir,
         iterations: 1,
         prompt: "test",
-        timeoutSeconds: 0.1, // 100ms — well below the 2s agent delay
+        idleTimeoutSeconds: 0.1, // 100ms — well below the 2s agent delay with no output
       }).pipe(
         Effect.provide(Layer.merge(factoryLayer, testDisplayLayer)),
         Effect.exit,
@@ -1954,10 +1953,87 @@ describe("Orchestrator Display integration", () => {
       const err = Cause.squash(exitResult.cause);
       expect(err).toBeInstanceOf(TimeoutError);
       if (err instanceof TimeoutError) {
-        expect(err.timeoutSeconds).toBe(0.1);
-        expect(err.message).toContain("minutes");
-        expect(err.message).not.toContain("seconds");
+        expect(err.idleTimeoutSeconds).toBe(0.1);
+        expect(err.message).toContain("idle");
+        expect(err.message).toContain("--idle-timeout");
       }
     }
+  }, 10_000);
+
+  it("resets the idle timer on each text/tool_call output", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-idle-reset-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // Mock agent: emits text after 100ms, then completes after another 100ms.
+    // With idleTimeoutSeconds=0.15 (150ms), the timer fires at t=150ms without reset.
+    // But the text event at t=100ms should reset the timer to t=250ms, allowing
+    // the run to complete at t=200ms before the reset timer fires.
+    const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
+      hostDir,
+      (dir) => {
+        const fsLayer = makeLocalSandboxLayer(dir);
+        return Layer.succeed(Sandbox, {
+          exec: (command, options) =>
+            Effect.flatMap(Sandbox, (real) => real.exec(command, options)).pipe(
+              Effect.provide(fsLayer),
+            ),
+          execStreaming: (command, onStdoutLine, options) => {
+            if (command.startsWith("claude ")) {
+              return Effect.gen(function* () {
+                // Wait 100ms then emit a text event (resets idle timer)
+                yield* Effect.promise(
+                  () => new Promise((resolve) => setTimeout(resolve, 100)),
+                );
+                onStdoutLine(
+                  JSON.stringify({
+                    type: "assistant",
+                    message: {
+                      content: [{ type: "text", text: "working..." }],
+                    },
+                  }),
+                );
+                // Wait another 100ms then emit the result
+                yield* Effect.promise(
+                  () => new Promise((resolve) => setTimeout(resolve, 100)),
+                );
+                onStdoutLine(
+                  JSON.stringify({ type: "result", result: "done" }),
+                );
+                return { stdout: "", stderr: "", exitCode: 0 };
+              });
+            }
+            return Effect.flatMap(Sandbox, (real) =>
+              real.execStreaming(command, onStdoutLine, options),
+            ).pipe(Effect.provide(fsLayer));
+          },
+          copyIn: (hostPath, sandboxPath) =>
+            Effect.flatMap(Sandbox, (real) =>
+              real.copyIn(hostPath, sandboxPath),
+            ).pipe(Effect.provide(fsLayer)),
+          copyOut: (sandboxPath, hostPath) =>
+            Effect.flatMap(Sandbox, (real) =>
+              real.copyOut(sandboxPath, hostPath),
+            ).pipe(Effect.provide(fsLayer)),
+        });
+      },
+    );
+
+    const exitResult = await Effect.runPromise(
+      orchestrate({
+        hostRepoDir: hostDir,
+        sandboxRepoDir,
+        iterations: 1,
+        prompt: "test",
+        idleTimeoutSeconds: 0.15, // 150ms — timer resets on text at t=100ms
+      }).pipe(
+        Effect.provide(Layer.merge(factoryLayer, testDisplayLayer)),
+        Effect.exit,
+      ),
+    );
+
+    // Should succeed because the text event at t=100ms resets the idle timer
+    expect(exitResult._tag).toBe("Success");
   }, 10_000);
 });

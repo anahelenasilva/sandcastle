@@ -148,14 +148,14 @@ describe("RunOptions", () => {
     expect(opts.agent).toBeUndefined();
   });
 
-  it("allows timeoutSeconds to be specified", () => {
-    const opts: RunOptions = { prompt: "test", timeoutSeconds: 120 };
-    expect(opts.timeoutSeconds).toBe(120);
+  it("allows idleTimeoutSeconds to be specified", () => {
+    const opts: RunOptions = { prompt: "test", idleTimeoutSeconds: 120 };
+    expect(opts.idleTimeoutSeconds).toBe(120);
   });
 
-  it("allows timeoutSeconds to be omitted (uses default)", () => {
+  it("allows idleTimeoutSeconds to be omitted (uses default)", () => {
     const opts: RunOptions = { prompt: "test" };
-    expect(opts.timeoutSeconds).toBeUndefined();
+    expect(opts.idleTimeoutSeconds).toBeUndefined();
   });
 
   it("allows name to be specified", () => {

@@ -1,4 +1,4 @@
-import { Duration, Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
 import { AgentError, TimeoutError } from "./errors.js";
@@ -142,6 +142,7 @@ const invokeAgent = (
   sandboxRepoDir: string,
   prompt: string,
   model: string,
+  idleTimeoutMs: number,
   onText: (text: string) => void,
   onToolCall: (name: string, formattedArgs: string) => void,
 ): Effect.Effect<{ result: string; usage: TokenUsage | null }, SandboxError> =>
@@ -149,32 +150,69 @@ const invokeAgent = (
     let resultText = "";
     let tokenUsage: TokenUsage | null = null;
 
-    const execResult = yield* sandbox.execStreaming(
-      `claude --print --verbose --dangerously-skip-permissions --output-format stream-json --model ${model} -p ${shellEscape(prompt)}`,
-      (line) => {
-        for (const parsed of parseStreamJsonLine(line)) {
-          if (parsed.type === "text") {
-            onText(parsed.text);
-          } else if (parsed.type === "result") {
-            resultText = parsed.result;
-            tokenUsage = parsed.usage;
-          } else if (parsed.type === "tool_call") {
-            onToolCall(parsed.name, parsed.args);
+    // Deferred that will be failed when the idle timer fires
+    const timeoutSignal = yield* Deferred.make<never, TimeoutError>();
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const idleTimeoutSeconds = idleTimeoutMs / 1000;
+
+    const resetIdleTimer = () => {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      timeoutHandle = setTimeout(() => {
+        Effect.runPromise(
+          Deferred.fail(
+            timeoutSignal,
+            new TimeoutError({
+              message: `Agent idle for ${idleTimeoutSeconds} seconds — no output received. Consider increasing the idle timeout with --idle-timeout.`,
+              idleTimeoutSeconds,
+            }),
+          ),
+        ).catch(() => {});
+      }, idleTimeoutMs);
+    };
+
+    resetIdleTimer();
+
+    const execEffect = Effect.gen(function* () {
+      const execResult = yield* sandbox.execStreaming(
+        `claude --print --verbose --dangerously-skip-permissions --output-format stream-json --model ${model} -p ${shellEscape(prompt)}`,
+        (line) => {
+          for (const parsed of parseStreamJsonLine(line)) {
+            if (parsed.type === "text") {
+              resetIdleTimer();
+              onText(parsed.text);
+            } else if (parsed.type === "result") {
+              resultText = parsed.result;
+              tokenUsage = parsed.usage;
+            } else if (parsed.type === "tool_call") {
+              resetIdleTimer();
+              onToolCall(parsed.name, parsed.args);
+            }
           }
-        }
-      },
-      { cwd: sandboxRepoDir },
+        },
+        { cwd: sandboxRepoDir },
+      );
+
+      if (execResult.exitCode !== 0) {
+        return yield* Effect.fail(
+          new AgentError({
+            message: `Claude exited with code ${execResult.exitCode}:\n${execResult.stderr}`,
+          }),
+        );
+      }
+
+      return { result: resultText || execResult.stdout, usage: tokenUsage };
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (timeoutHandle !== null) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+          }
+        }),
+      ),
     );
 
-    if (execResult.exitCode !== 0) {
-      return yield* Effect.fail(
-        new AgentError({
-          message: `Claude exited with code ${execResult.exitCode}:\n${execResult.stderr}`,
-        }),
-      );
-    }
-
-    return { result: resultText || execResult.stdout, usage: tokenUsage };
+    return yield* Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
   });
 
 const shellEscape = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
@@ -187,7 +225,7 @@ const formatUsageRows = (usage: TokenUsage): Record<string, string> => ({
 });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
-const DEFAULT_TIMEOUT_SECONDS = 20 * 60; // 1200 seconds
+const DEFAULT_IDLE_TIMEOUT_SECONDS = 5 * 60; // 300 seconds
 
 export interface OrchestrateOptions {
   readonly hostRepoDir: string;
@@ -198,8 +236,8 @@ export interface OrchestrateOptions {
   readonly branch?: string;
   readonly model?: string;
   readonly completionSignal?: string;
-  /** Timeout in seconds. If the run exceeds this, it fails with TimeoutError. Default: 1200 (20 minutes) */
-  readonly timeoutSeconds?: number;
+  /** Idle timeout in seconds. If the agent produces no output for this long, it fails with TimeoutError. Default: 300 (5 minutes) */
+  readonly idleTimeoutSeconds?: number;
   /** Optional name for the run, prepended to status messages as [name] */
   readonly name?: string;
 }
@@ -215,7 +253,8 @@ export interface OrchestrateResult {
 export const orchestrate = (
   options: OrchestrateOptions,
 ): Effect.Effect<OrchestrateResult, SandboxError, SandboxFactory | Display> => {
-  const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+  const idleTimeoutMs =
+    (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
@@ -268,6 +307,7 @@ export const orchestrate = (
                   ctx.sandboxRepoDir,
                   fullPrompt,
                   resolvedModel,
+                  idleTimeoutMs,
                   onText,
                   onToolCall,
                 );
@@ -324,14 +364,5 @@ export const orchestrate = (
       commits: allCommits,
       branch: resolvedBranch,
     };
-  }).pipe(
-    Effect.timeoutFail({
-      duration: Duration.seconds(timeoutSeconds),
-      onTimeout: () =>
-        new TimeoutError({
-          message: `Run timed out after ${timeoutSeconds / 60} minutes`,
-          timeoutSeconds,
-        }),
-    }),
-  );
+  });
 };

@@ -52,10 +52,10 @@ export class InitError extends Data.TaggedError("InitError")<{
   readonly message: string;
 }> {}
 
-/** Run exceeded the configured timeout */
+/** Run exceeded the configured idle timeout */
 export class TimeoutError extends Data.TaggedError("TimeoutError")<{
   readonly message: string;
-  readonly timeoutSeconds: number;
+  readonly idleTimeoutSeconds: number;
 }> {}
 
 /** Union of all sandbox-related errors */

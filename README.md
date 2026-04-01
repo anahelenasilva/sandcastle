@@ -111,8 +111,8 @@ const result = await run({
   // Default: "<promise>COMPLETE</promise>"
   completionSignal: "<promise>COMPLETE</promise>",
 
-  // Maximum wall-clock time for the entire run, in seconds. Default: 1200 (20 minutes)
-  timeoutSeconds: 1200,
+  // Idle timeout in seconds — resets whenever the agent produces output. Default: 300 (5 minutes)
+  idleTimeoutSeconds: 300,
 });
 
 console.log(result.iterationsRun); // number of iterations executed
@@ -263,21 +263,21 @@ Removes the Docker image.
 
 ### `RunOptions`
 
-| Option             | Type       | Default                       | Description                                                     |
-| ------------------ | ---------- | ----------------------------- | --------------------------------------------------------------- |
-| `prompt`           | string     | —                             | Inline prompt (mutually exclusive with `promptFile`)            |
-| `promptFile`       | string     | —                             | Path to prompt file (mutually exclusive with `prompt`)          |
-| `maxIterations`    | number     | `1`                           | Maximum iterations to run                                       |
-| `hooks`            | object     | —                             | Lifecycle hooks (`onSandboxReady`)                              |
-| `branch`           | string     | —                             | Target branch for sandbox work                                  |
-| `model`            | string     | `claude-opus-4-6`             | Model to use for the agent                                      |
-| `imageName`        | string     | `sandcastle:<repo-dir-name>`  | Docker image name for the sandbox                               |
-| `name`             | string     | —                             | Display name for the run, shown as a prefix in log output       |
-| `promptArgs`       | PromptArgs | —                             | Key-value map for `{{KEY}}` placeholder substitution            |
-| `copyToSandbox`    | string[]   | —                             | Host-relative file paths to copy into the worktree before start |
-| `logging`          | object     | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                |
-| `completionSignal` | string     | `<promise>COMPLETE</promise>` | Custom string the agent emits to stop the iteration loop early  |
-| `timeoutSeconds`   | number     | `1200`                        | Timeout for the entire run in seconds                           |
+| Option               | Type       | Default                       | Description                                                     |
+| -------------------- | ---------- | ----------------------------- | --------------------------------------------------------------- |
+| `prompt`             | string     | —                             | Inline prompt (mutually exclusive with `promptFile`)            |
+| `promptFile`         | string     | —                             | Path to prompt file (mutually exclusive with `prompt`)          |
+| `maxIterations`      | number     | `1`                           | Maximum iterations to run                                       |
+| `hooks`              | object     | —                             | Lifecycle hooks (`onSandboxReady`)                              |
+| `branch`             | string     | —                             | Target branch for sandbox work                                  |
+| `model`              | string     | `claude-opus-4-6`             | Model to use for the agent                                      |
+| `imageName`          | string     | `sandcastle:<repo-dir-name>`  | Docker image name for the sandbox                               |
+| `name`               | string     | —                             | Display name for the run, shown as a prefix in log output       |
+| `promptArgs`         | PromptArgs | —                             | Key-value map for `{{KEY}}` placeholder substitution            |
+| `copyToSandbox`      | string[]   | —                             | Host-relative file paths to copy into the worktree before start |
+| `logging`            | object     | file (auto-generated)         | `{ type: 'file', path }` or `{ type: 'stdout' }`                |
+| `completionSignal`   | string     | `<promise>COMPLETE</promise>` | Custom string the agent emits to stop the iteration loop early  |
+| `idleTimeoutSeconds` | number     | `300`                         | Idle timeout in seconds — resets on each agent output event     |
 
 ### `RunResult`
 

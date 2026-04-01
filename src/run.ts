@@ -166,8 +166,8 @@ export interface RunOptions {
   readonly logging?: LoggingOption;
   /** Custom completion signal string (default: "<promise>COMPLETE</promise>") */
   readonly completionSignal?: string;
-  /** Timeout in seconds. If the run exceeds this, it fails. Default: 1200 (20 minutes) */
-  readonly timeoutSeconds?: number;
+  /** Idle timeout in seconds. If the agent produces no output for this long, it fails. Default: 300 (5 minutes) */
+  readonly idleTimeoutSeconds?: number;
   /** Optional name for the run, shown as a prefix in log output */
   readonly name?: string;
   /** Paths relative to the host repo root to copy into the worktree before container start. */
@@ -308,7 +308,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
         branch,
         model: resolvedModel,
         completionSignal: options.completionSignal,
-        timeoutSeconds: options.timeoutSeconds,
+        idleTimeoutSeconds: options.idleTimeoutSeconds,
         name: options.name,
       });
 
