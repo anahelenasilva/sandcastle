@@ -166,7 +166,7 @@ export const claudeCode = (model: string): AgentProvider => ({
   },
 
   buildInteractiveArgs(_prompt: string): string[] {
-    return ["--dangerously-skip-permissions", "--model", model];
+    return ["claude", "--dangerously-skip-permissions", "--model", model];
   },
 
   parseStreamLine(line: string): ParsedStreamEvent[] {

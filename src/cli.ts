@@ -16,7 +16,11 @@ import {
   getNextStepsLines,
 } from "./InitService.js";
 import { defaultImageName } from "./run.js";
-import { claudeCode, DEFAULT_MODEL } from "./AgentProvider.js";
+import {
+  claudeCode,
+  DEFAULT_MODEL,
+  type AgentProvider,
+} from "./AgentProvider.js";
 import type { AgentEntry } from "./InitService.js";
 import { AgentError, ConfigDirError, InitError } from "./errors.js";
 import {
@@ -303,6 +307,21 @@ const removeImageCommand = Command.make(
 
 // --- Interactive command ---
 
+/** CLI-internal registry mapping agent names to factory + default model */
+const AGENT_REGISTRY: Record<
+  string,
+  { factory: (model: string) => AgentProvider; defaultModel: string }
+> = {
+  "claude-code": { factory: claudeCode, defaultModel: DEFAULT_MODEL },
+};
+
+const agentOption = Options.text("agent").pipe(
+  Options.withDescription(
+    `Agent provider to use (${Object.keys(AGENT_REGISTRY).join(", ")})`,
+  ),
+  Options.withDefault("claude-code"),
+);
+
 const modelOption = Options.text("model").pipe(
   Options.withDescription(
     "Model to use for the agent (e.g. claude-sonnet-4-6)",
@@ -312,16 +331,15 @@ const modelOption = Options.text("model").pipe(
 
 const interactiveSession = (options: {
   hostRepoDir: string;
-  model?: string;
+  provider: AgentProvider;
 }): Effect.Effect<
   void,
   import("./errors.js").SandboxError,
   SandboxFactory | Display
 > =>
   Effect.gen(function* () {
-    const { hostRepoDir } = options;
+    const { hostRepoDir, provider } = options;
     const sandboxRepoDir = SANDBOX_WORKSPACE_DIR;
-    const provider = claudeCode(options.model ?? DEFAULT_MODEL);
     const factory = yield* SandboxFactory;
     const d = yield* Display;
 
@@ -334,8 +352,10 @@ const interactiveSession = (options: {
             const hostnameResult = yield* ctx.sandbox.exec("hostname");
             const containerId = hostnameResult.stdout.trim();
 
-            // Launch interactive Claude session with TTY passthrough
-            yield* d.status("Launching interactive Claude session...", "info");
+            yield* d.status(
+              `Launching interactive ${provider.name} session...`,
+              "info",
+            );
 
             const exitCode = yield* Effect.async<number, AgentError>(
               (resume) => {
@@ -347,7 +367,6 @@ const interactiveSession = (options: {
                     "-w",
                     ctx.sandboxRepoDir,
                     containerId,
-                    "claude",
                     ...provider.buildInteractiveArgs(""),
                   ],
                   { stdio: "inherit" },
@@ -357,7 +376,7 @@ const interactiveSession = (options: {
                   resume(
                     Effect.fail(
                       new AgentError({
-                        message: `Failed to launch Claude: ${error.message}`,
+                        message: `Failed to launch ${provider.name}: ${error.message}`,
                       }),
                     ),
                   );
@@ -382,22 +401,40 @@ const interactiveCommand = Command.make(
   "interactive",
   {
     imageName: imageNameOption,
+    agent: agentOption,
     model: modelOption,
   },
-  ({ imageName: imageNameFlag, model }) =>
+  ({ imageName: imageNameFlag, agent: agentName, model }) =>
     Effect.gen(function* () {
       const hostRepoDir = process.cwd();
       yield* requireConfigDir(hostRepoDir);
 
       const imageName = resolveImageName(imageNameFlag, hostRepoDir);
 
+      // Resolve agent provider from registry
+      const entry = AGENT_REGISTRY[agentName];
+      if (!entry) {
+        const available = Object.keys(AGENT_REGISTRY).join(", ");
+        yield* Effect.fail(
+          new AgentError({
+            message: `Unknown agent "${agentName}". Available: ${available}`,
+          }),
+        );
+        return; // unreachable, satisfies TypeScript
+      }
+      const resolvedModel =
+        model._tag === "Some" ? model.value : entry.defaultModel;
+      const provider = entry.factory(resolvedModel);
+
       // Resolve env vars
       const env = yield* resolveEnv(hostRepoDir);
 
-      const resolvedModel = model._tag === "Some" ? model.value : undefined;
-
       const d = yield* Display;
-      yield* d.summary("Sandcastle Interactive", { Image: imageName });
+      yield* d.summary("Sandcastle Interactive", {
+        Image: imageName,
+        Agent: provider.name,
+        Model: resolvedModel,
+      });
 
       const factoryLayer = Layer.provide(
         WorktreeDockerSandboxFactory.layer,
@@ -413,7 +450,7 @@ const interactiveCommand = Command.make(
 
       yield* interactiveSession({
         hostRepoDir,
-        model: resolvedModel,
+        provider,
       }).pipe(Effect.provide(factoryLayer));
     }),
 );

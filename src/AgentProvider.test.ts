@@ -34,9 +34,10 @@ describe("claudeCode factory", () => {
     expect(command).toContain("--model 'claude-opus-4-6'");
   });
 
-  it("buildInteractiveArgs includes the model", () => {
+  it("buildInteractiveArgs includes the binary and model", () => {
     const provider = claudeCode("claude-sonnet-4-6");
     const args = provider.buildInteractiveArgs("");
+    expect(args[0]).toBe("claude");
     expect(args).toContain("claude-sonnet-4-6");
     expect(args).toContain("--model");
   });
