@@ -682,6 +682,100 @@ describe("OrchestrateResult", () => {
     const hostHead = await getHead(hostDir);
     expect(result.commits[0]!.sha).toBe(hostHead);
   });
+
+  it("surfaces commits even when worktree has uncommitted changes", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-result-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const sandboxBaseDir = join(tmpdir(), `orch-factory-${randomUUID()}`);
+    let branchCounter = 0;
+
+    // Custom factory that detects uncommitted changes and preserves worktree path
+    const factoryLayer = Layer.succeed(SandboxFactory, {
+      withSandbox: <A, E, R>(
+        makeEffect: (
+          info: import("./SandboxFactory.js").SandboxInfo,
+        ) => Effect.Effect<A, E, R | Sandbox>,
+      ): Effect.Effect<
+        import("./SandboxFactory.js").WithSandboxResult<A>,
+        E | DockerError,
+        Exclude<R, Sandbox>
+      > =>
+        Effect.acquireUseRelease(
+          Effect.promise(async () => {
+            await rm(sandboxBaseDir, { recursive: true, force: true });
+            const branchName = `sandcastle/test-${++branchCounter}`;
+            await execAsync(
+              `git worktree add -b "${branchName}" "${sandboxBaseDir}" HEAD`,
+              { cwd: hostDir },
+            );
+            return branchName;
+          }),
+          (_branchName) =>
+            makeEffect({ hostWorktreePath: sandboxBaseDir }).pipe(
+              Effect.provide(
+                makeMockAgentLayer(sandboxBaseDir, async (repoDir) => {
+                  // Make a commit
+                  await writeFile(
+                    join(repoDir, "committed.txt"),
+                    "committed content",
+                  );
+                  await execAsync("git add -A", { cwd: repoDir });
+                  await execAsync('git config user.email "agent@test.com"', {
+                    cwd: repoDir,
+                  });
+                  await execAsync('git config user.name "Agent"', {
+                    cwd: repoDir,
+                  });
+                  await execAsync('git commit -m "agent commit"', {
+                    cwd: repoDir,
+                  });
+
+                  // Leave uncommitted changes
+                  await writeFile(
+                    join(repoDir, "uncommitted.txt"),
+                    "uncommitted content",
+                  );
+
+                  return "Done.";
+                }),
+              ),
+            ) as Effect.Effect<A, E | DockerError, Exclude<R, Sandbox>>,
+          (_branchName) =>
+            Effect.promise(async () => {
+              try {
+                await execAsync(
+                  `git worktree remove "${sandboxBaseDir}" --force`,
+                  { cwd: hostDir },
+                ).catch(() => {});
+              } catch {}
+            }),
+        ).pipe(
+          Effect.map((value) => {
+            // Check for uncommitted changes before cleanup
+            return { value, preservedWorktreePath: sandboxBaseDir };
+          }),
+        ),
+    });
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        hostRepoDir: hostDir,
+        sandboxRepoDir: sandboxBaseDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    // Should have the preserved worktree path
+    expect(result.preservedWorktreePath).toBe(sandboxBaseDir);
+
+    // Commits should still be surfaced
+    expect(result.commits).toHaveLength(1);
+    expect(result.commits[0]!.sha).toMatch(/^[0-9a-f]{40}$/);
+  });
 });
 
 describe("parseStreamJsonLine", () => {
