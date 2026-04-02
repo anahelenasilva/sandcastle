@@ -259,7 +259,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
   const resolvedBranch =
     worktreeMode.mode === "none"
       ? currentHostBranch
-      : (branch ?? generateTempBranchName(agentName));
+      : (branch ?? generateTempBranchName(options.name));
 
   // When using a temp branch, prefix the log filename with the target branch
   // (the host's current branch) so developers can tell which branch was targeted.
@@ -300,7 +300,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
         hostRepoDir,
         worktree: worktreeMode,
         copyToSandbox: options.copyToSandbox,
-        agentName,
+        name: options.name,
       }),
       NodeFileSystem.layer,
       displayLayer,
