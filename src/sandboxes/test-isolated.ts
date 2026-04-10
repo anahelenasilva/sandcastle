@@ -7,8 +7,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
-import { copyFile, mkdir, rm } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,7 +15,7 @@ import {
   createIsolatedSandboxProvider,
   type ExecResult,
   type IsolatedSandboxHandle,
-  type SandboxProvider,
+  type IsolatedSandboxProvider,
 } from "../SandboxProvider.js";
 
 /**
@@ -26,7 +25,7 @@ import {
  * `copyIn`/`copyOut` copy files between host and the temp dir,
  * and `close` removes the temp dir.
  */
-export const testIsolated = (): SandboxProvider =>
+export const testIsolated = (): IsolatedSandboxProvider =>
   createIsolatedSandboxProvider({
     name: "test-isolated",
     create: async (): Promise<IsolatedSandboxHandle> => {

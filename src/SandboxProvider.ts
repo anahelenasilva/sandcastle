@@ -128,7 +128,7 @@ export type SandboxProvider =
  */
 export const createBindMountSandboxProvider = (
   config: BindMountSandboxProviderConfig,
-): SandboxProvider => ({
+): BindMountSandboxProvider => ({
   tag: "bind-mount",
   name: config.name,
   create: config.create,
@@ -140,7 +140,7 @@ export const createBindMountSandboxProvider = (
  */
 export const createIsolatedSandboxProvider = (
   config: IsolatedSandboxProviderConfig,
-): SandboxProvider => ({
+): IsolatedSandboxProvider => ({
   tag: "isolated",
   name: config.name,
   create: config.create,

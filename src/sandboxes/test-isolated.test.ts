@@ -13,8 +13,6 @@ describe("testIsolated()", () => {
 
   it("can create a sandbox and exec a command", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       const result = await handle.exec("echo hello");
@@ -27,8 +25,6 @@ describe("testIsolated()", () => {
 
   it("exec runs in workspacePath by default", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       const result = await handle.exec("pwd");
@@ -40,8 +36,6 @@ describe("testIsolated()", () => {
 
   it("exec respects cwd option", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       const result = await handle.exec("pwd", { cwd: "/tmp" });
@@ -53,8 +47,6 @@ describe("testIsolated()", () => {
 
   it("exec returns non-zero exit code on failure", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       const result = await handle.exec("exit 42");
@@ -66,8 +58,6 @@ describe("testIsolated()", () => {
 
   it("can copyIn a file from host to sandbox", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       // Create a file on the "host"
@@ -89,8 +79,6 @@ describe("testIsolated()", () => {
 
   it("can copyOut a file from sandbox to host", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       // Create a file inside the sandbox
@@ -112,8 +100,6 @@ describe("testIsolated()", () => {
 
   it("close cleans up the temp directory", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     const workspacePath = handle.workspacePath;
 
@@ -128,8 +114,6 @@ describe("testIsolated()", () => {
 
   it("execStreaming streams lines to callback", async () => {
     const provider = testIsolated();
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
-
     const handle = await provider.create({ env: {} });
     try {
       const lines: string[] = [];

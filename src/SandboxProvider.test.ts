@@ -85,9 +85,6 @@ describe("createIsolatedSandboxProvider", () => {
     });
 
     const options = { env: { FOO: "bar" } };
-
-    // Narrow to isolated provider to access create
-    if (provider.tag !== "isolated") throw new Error("Expected isolated tag");
     const result = await provider.create(options);
 
     expect(createFn).toHaveBeenCalledWith(options);

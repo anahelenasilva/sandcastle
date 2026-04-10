@@ -22,6 +22,8 @@ export {
 } from "./SandboxProvider.js";
 export type {
   SandboxProvider,
+  BindMountSandboxProvider,
+  IsolatedSandboxProvider,
   BindMountSandboxHandle,
   IsolatedSandboxHandle,
   ExecResult,
