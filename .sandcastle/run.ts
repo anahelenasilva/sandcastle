@@ -59,9 +59,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       await acquire();
       try {
         await using sandbox = await sandcastle.createSandbox({
-          sandbox: docker({
-            branchStrategy: { type: "branch", branch: issue.branch },
-          }),
+          sandbox: docker(),
           branch: issue.branch,
           copyToSandbox: ["node_modules"],
           hooks: {
