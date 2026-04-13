@@ -21,6 +21,10 @@
     "./sandboxes/podman": {
       "import": "./dist/sandboxes/podman.js",
       "types": "./dist/sandboxes/podman.d.ts"
+    },
+    "./sandboxes/daytona": {
+      "import": "./dist/sandboxes/daytona.js",
+      "types": "./dist/sandboxes/daytona.d.ts"
     }
   },
   "bin": {
@@ -72,10 +76,14 @@
     "effect": "^3.20.0"
   },
   "peerDependencies": {
-    "@vercel/sandbox": ">=1.0.0"
+    "@vercel/sandbox": ">=1.0.0",
+    "@daytona/sdk": "^0.164.0"
   },
   "peerDependenciesMeta": {
     "@vercel/sandbox": {
+      "optional": true
+    },
+    "@daytona/sdk": {
       "optional": true
     }
   },
