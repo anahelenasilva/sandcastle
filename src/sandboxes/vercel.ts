@@ -137,8 +137,9 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
       if (options?.resources) createParams.resources = options.resources;
       if (options?.networkPolicy)
         createParams.networkPolicy = options.networkPolicy;
-      if (options?.runtime) createParams.runtime = options.runtime;
-      if (options?.template) createParams.runtime = options.template;
+      // runtime takes precedence over the template convenience alias
+      const resolvedRuntime = options?.runtime ?? options?.template;
+      if (resolvedRuntime) createParams.runtime = resolvedRuntime;
 
       // Timeout: prefer explicit timeout, fall back to timeoutMs alias
       const timeoutValue = options?.timeout ?? options?.timeoutMs;
@@ -159,10 +160,8 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
       // Ensure workspace directory exists
       await sandbox.mkDir(VERCEL_WORKSPACE_PATH);
 
-      const workspacePath = VERCEL_WORKSPACE_PATH;
-
       const handle: IsolatedSandboxHandle = {
-        workspacePath,
+        workspacePath: VERCEL_WORKSPACE_PATH,
 
         exec: async (
           command: string,
@@ -171,7 +170,7 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
           const result = await sandbox.runCommand({
             cmd: "sh",
             args: ["-c", command],
-            cwd: opts?.cwd ?? workspacePath,
+            cwd: opts?.cwd ?? VERCEL_WORKSPACE_PATH,
           });
 
           const stdout = await result.stdout();
@@ -224,7 +223,7 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
           const result = await sandbox.runCommand({
             cmd: "sh",
             args: ["-c", command],
-            cwd: opts?.cwd ?? workspacePath,
+            cwd: opts?.cwd ?? VERCEL_WORKSPACE_PATH,
             stdout: stdoutWritable,
             stderr: stderrWritable,
           });
