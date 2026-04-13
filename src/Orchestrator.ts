@@ -116,7 +116,6 @@ const DEFAULT_IDLE_TIMEOUT_SECONDS = 10 * 60; // 600 seconds
 
 export interface OrchestrateOptions {
   readonly hostRepoDir: string;
-  readonly sandboxRepoDir: string;
   readonly iterations: number;
   readonly hooks?: SandboxHooks;
   readonly prompt: string;
@@ -150,15 +149,8 @@ export const orchestrate = (
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
-    const {
-      hostRepoDir,
-      sandboxRepoDir,
-      iterations,
-      hooks,
-      prompt,
-      branch,
-      provider,
-    } = options;
+    const { hostRepoDir, iterations, hooks, prompt, branch, provider } =
+      options;
     let completionSignals: string[];
     if (options.completionSignal === undefined) {
       completionSignals = [DEFAULT_COMPLETION_SIGNAL];
@@ -179,72 +171,73 @@ export const orchestrate = (
     for (let i = 1; i <= iterations; i++) {
       yield* display.status(label(`Iteration ${i}/${iterations}`), "info");
 
-      const sandboxResult = yield* factory.withSandbox(({ hostWorktreePath }) =>
-        withSandboxLifecycle(
-          {
-            hostRepoDir,
-            sandboxRepoDir,
-            hooks,
-            branch,
-            hostWorktreePath,
-          },
-          (ctx) =>
-            Effect.gen(function* () {
-              // Preprocess prompt (run !`command` expressions inside sandbox)
-              const fullPrompt = yield* preprocessPrompt(
-                prompt,
-                ctx.sandbox,
-                ctx.sandboxRepoDir,
-              );
+      const sandboxResult = yield* factory.withSandbox(
+        ({ hostWorktreePath, sandboxWorkspacePath }) =>
+          withSandboxLifecycle(
+            {
+              hostRepoDir,
+              sandboxRepoDir: sandboxWorkspacePath,
+              hooks,
+              branch,
+              hostWorktreePath,
+            },
+            (ctx) =>
+              Effect.gen(function* () {
+                // Preprocess prompt (run !`command` expressions inside sandbox)
+                const fullPrompt = yield* preprocessPrompt(
+                  prompt,
+                  ctx.sandbox,
+                  ctx.sandboxRepoDir,
+                );
 
-              yield* display.status(label("Agent started"), "success");
+                yield* display.status(label("Agent started"), "success");
 
-              // Invoke the agent — buffer text deltas so Pi's single-token
-              // chunks are displayed as readable multi-word lines.
-              const textBuffer = new TextDeltaBuffer((chunk) => {
-                Effect.runPromise(display.text(chunk));
-              });
-              const onText = (text: string) => {
-                textBuffer.write(text);
-              };
-              const onToolCall = (name: string, formattedArgs: string) => {
-                textBuffer.flush();
-                Effect.runPromise(display.toolCall(name, formattedArgs));
-              };
-              const onIdleWarning = (minutes: number) => {
-                const msg =
-                  minutes === 1
-                    ? "Agent idle for 1 minute"
-                    : `Agent idle for ${minutes} minutes`;
-                Effect.runPromise(display.status(label(msg), "warn"));
-              };
-              const { result: agentOutput } = yield* invokeAgent(
-                ctx.sandbox,
-                ctx.sandboxRepoDir,
-                fullPrompt,
-                provider,
-                idleTimeoutMs,
-                onText,
-                onToolCall,
-                onIdleWarning,
-                options._idleWarningIntervalMs,
-              );
+                // Invoke the agent — buffer text deltas so Pi's single-token
+                // chunks are displayed as readable multi-word lines.
+                const textBuffer = new TextDeltaBuffer((chunk) => {
+                  Effect.runPromise(display.text(chunk));
+                });
+                const onText = (text: string) => {
+                  textBuffer.write(text);
+                };
+                const onToolCall = (name: string, formattedArgs: string) => {
+                  textBuffer.flush();
+                  Effect.runPromise(display.toolCall(name, formattedArgs));
+                };
+                const onIdleWarning = (minutes: number) => {
+                  const msg =
+                    minutes === 1
+                      ? "Agent idle for 1 minute"
+                      : `Agent idle for ${minutes} minutes`;
+                  Effect.runPromise(display.status(label(msg), "warn"));
+                };
+                const { result: agentOutput } = yield* invokeAgent(
+                  ctx.sandbox,
+                  ctx.sandboxRepoDir,
+                  fullPrompt,
+                  provider,
+                  idleTimeoutMs,
+                  onText,
+                  onToolCall,
+                  onIdleWarning,
+                  options._idleWarningIntervalMs,
+                );
 
-              // Flush any remaining buffered text deltas
-              textBuffer.dispose();
+                // Flush any remaining buffered text deltas
+                textBuffer.dispose();
 
-              yield* display.status(label("Agent stopped"), "info");
+                yield* display.status(label("Agent stopped"), "info");
 
-              // Check completion signal
-              const matchedSignal = completionSignals.find((sig) =>
-                agentOutput.includes(sig),
-              );
-              return {
-                completionSignal: matchedSignal,
-                stdout: agentOutput,
-              } as const;
-            }),
-        ),
+                // Check completion signal
+                const matchedSignal = completionSignals.find((sig) =>
+                  agentOutput.includes(sig),
+                );
+                return {
+                  completionSignal: matchedSignal,
+                  stdout: agentOutput,
+                } as const;
+              }),
+          ),
       );
 
       const lifecycleResult = sandboxResult.value;

@@ -32,7 +32,6 @@ import {
   SandboxFactory,
   WorktreeDockerSandboxFactory,
   SandboxConfig,
-  SANDBOX_WORKSPACE_DIR,
 } from "./SandboxFactory.js";
 import { withSandboxLifecycle } from "./SandboxLifecycle.js";
 import { resolveEnv } from "./EnvResolver.js";
@@ -354,13 +353,12 @@ const interactiveSession = (options: {
 > =>
   Effect.gen(function* () {
     const { hostRepoDir, provider } = options;
-    const sandboxRepoDir = SANDBOX_WORKSPACE_DIR;
     const factory = yield* SandboxFactory;
     const d = yield* Display;
 
-    yield* factory.withSandbox(({ hostWorktreePath }) =>
+    yield* factory.withSandbox(({ hostWorktreePath, sandboxWorkspacePath }) =>
       withSandboxLifecycle(
-        { hostRepoDir, sandboxRepoDir, hostWorktreePath },
+        { hostRepoDir, sandboxRepoDir: sandboxWorkspacePath, hostWorktreePath },
         (ctx) =>
           Effect.gen(function* () {
             // Get sandbox ID for interactive session

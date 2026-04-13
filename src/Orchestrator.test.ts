@@ -73,7 +73,7 @@ const toStreamJson = (output: string): string => {
  *
  * @param hostRepoDir - The host git repository to create worktrees from
  * @param buildLayer - Given a fresh sandbox dir, return a Sandbox layer
- * @returns The factory layer and the sandboxRepoDir path to pass to orchestrate
+ * @returns The factory layer
  */
 const makeTestSandboxFactory = (
   hostRepoDir: string,
@@ -107,9 +107,14 @@ const makeTestSandboxFactory = (
         }),
         // Use: provide sandbox layer and run effect
         (_branchName) =>
-          makeEffect({ hostWorktreePath: sandboxBaseDir }).pipe(
-            Effect.provide(buildLayer(sandboxBaseDir)),
-          ) as Effect.Effect<A, E | DockerError, Exclude<R, Sandbox>>,
+          makeEffect({
+            hostWorktreePath: sandboxBaseDir,
+            sandboxWorkspacePath: sandboxBaseDir,
+          }).pipe(Effect.provide(buildLayer(sandboxBaseDir))) as Effect.Effect<
+            A,
+            E | DockerError,
+            Exclude<R, Sandbox>
+          >,
         // Release: remove the worktree (branch cleanup is handled by withSandboxLifecycle)
         (_branchName) =>
           Effect.promise(async () => {
@@ -207,7 +212,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
 
         prompt: "do some work",
@@ -241,7 +246,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
 
         prompt: "do some work",
@@ -271,7 +276,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
         completionSignal: "TASK_FINISHED",
@@ -301,7 +306,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 2,
         prompt: "do some work",
         completionSignal: "TASK_FINISHED",
@@ -332,7 +337,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
         completionSignal: ["TASK_FINISHED", "TASK_ABORTED"],
@@ -362,7 +367,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
         completionSignal: ["TASK_FINISHED", "TASK_ABORTED"],
@@ -392,7 +397,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 2,
         prompt: "do some work",
         completionSignal: ["TASK_FINISHED", "TASK_ABORTED"],
@@ -445,7 +450,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
 
         prompt: "do some work",
@@ -481,7 +486,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 2,
 
         prompt: "do some work",
@@ -526,7 +531,7 @@ describe("Orchestrator", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 3,
 
         prompt: "test isolation",
@@ -559,7 +564,7 @@ describe("OrchestrateResult", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -607,7 +612,7 @@ describe("OrchestrateResult", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -641,7 +646,7 @@ describe("OrchestrateResult", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -676,7 +681,7 @@ describe("OrchestrateResult", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -725,7 +730,10 @@ describe("OrchestrateResult", () => {
             return branchName;
           }),
           (_branchName) =>
-            makeEffect({ hostWorktreePath: sandboxBaseDir }).pipe(
+            makeEffect({
+              hostWorktreePath: sandboxBaseDir,
+              sandboxWorkspacePath: sandboxBaseDir,
+            }).pipe(
               Effect.provide(
                 makeMockAgentLayer(sandboxBaseDir, async (repoDir) => {
                   // Make a commit
@@ -775,7 +783,6 @@ describe("OrchestrateResult", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir: sandboxBaseDir,
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -1077,7 +1084,6 @@ describe("Orchestrator tool call display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir: mockLayer.sandboxRepoDir,
         iterations: 1,
         prompt: "do some work",
       }).pipe(
@@ -1147,7 +1153,7 @@ describe("Orchestrator error handling", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
 
         prompt: "do some work",
@@ -1205,7 +1211,7 @@ describe("Orchestrator error handling", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
 
         prompt: "do some work",
@@ -1285,7 +1291,7 @@ describe("Orchestrator error handling", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 3,
 
         prompt: "do some work",
@@ -1310,7 +1316,7 @@ describe("Orchestrator error handling", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: "/nonexistent/repo",
-        sandboxRepoDir,
+
         iterations: 1,
 
         prompt: "do some work",
@@ -1360,7 +1366,7 @@ describe("Orchestrator error handling", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
 
         prompt: "do some work",
@@ -1420,7 +1426,7 @@ describe("Orchestrator streaming", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
 
         prompt: "do some work",
@@ -1451,7 +1457,7 @@ describe("Orchestrator streaming", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
 
         prompt: "do some work",
@@ -1510,7 +1516,7 @@ describe("Orchestrator streaming", () => {
       orchestrate({
         provider: claudeCode(DEFAULT_MODEL),
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -1567,7 +1573,7 @@ describe("Orchestrator streaming", () => {
       orchestrate({
         provider: claudeCode("claude-sonnet-4-6"),
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -1628,7 +1634,7 @@ describe("Orchestrator prompt preprocessing", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "Context: !`echo hello-from-sandbox`\n\nDo the work.",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -1696,7 +1702,6 @@ describe("Orchestrator prompt preprocessing", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir: sr2,
         iterations: 1,
         prompt: "Just a plain prompt with no commands.",
       }).pipe(Effect.provide(Layer.merge(fl2, testDisplayLayer))),
@@ -1728,7 +1733,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
@@ -1791,7 +1796,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 2,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
@@ -1829,7 +1834,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         // No idleTimeoutSeconds — should default to 10 minutes (600s)
@@ -1864,7 +1869,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
         name: "issue-42",
@@ -1905,7 +1910,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
@@ -1938,7 +1943,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         idleTimeoutSeconds: 0.1, // 100ms — well below the 2s agent delay with no output
@@ -2019,7 +2024,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         idleTimeoutSeconds: 0.15, // 150ms — timer resets on text at t=100ms
@@ -2086,7 +2091,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         idleTimeoutSeconds: 0.15, // 150ms — should be reset by raw stdout at t=100ms
@@ -2148,7 +2153,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         idleTimeoutSeconds: 10, // high enough not to kill
@@ -2239,7 +2244,7 @@ describe("Orchestrator Display integration", () => {
       orchestrate({
         provider: testProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "test",
         idleTimeoutSeconds: 10,
@@ -2371,7 +2376,7 @@ describe("Orchestrator with pi provider", () => {
       orchestrate({
         provider: piTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -2399,7 +2404,7 @@ describe("Orchestrator with pi provider", () => {
       orchestrate({
         provider: piTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -2488,7 +2493,7 @@ describe("Orchestrator with pi provider", () => {
       orchestrate({
         provider: piTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
@@ -2572,7 +2577,7 @@ describe("Orchestrator with pi provider", () => {
       orchestrate({
         provider: piTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
@@ -2686,7 +2691,7 @@ describe("Orchestrator with codex provider", () => {
       orchestrate({
         provider: codexTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 1,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
@@ -2714,7 +2719,7 @@ describe("Orchestrator with codex provider", () => {
       orchestrate({
         provider: codexTestProvider,
         hostRepoDir: hostDir,
-        sandboxRepoDir,
+
         iterations: 5,
         prompt: "do some work",
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),

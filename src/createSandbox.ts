@@ -322,7 +322,10 @@ export const createSandbox = async (
       // Build a SandboxFactory that reuses the existing sandbox
       const reuseFactoryLayer = Layer.succeed(SandboxFactory, {
         withSandbox: (makeEffect) =>
-          makeEffect({ hostWorktreePath: worktreePath }).pipe(
+          makeEffect({
+            hostWorktreePath: worktreePath,
+            sandboxWorkspacePath: sandboxRepoDir,
+          }).pipe(
             Effect.provide(sandboxLayer),
             Effect.map((value) => ({
               value,
@@ -340,7 +343,6 @@ export const createSandbox = async (
 
           return yield* orchestrate({
             hostRepoDir,
-            sandboxRepoDir,
             iterations: maxIterations,
             prompt: resolvedPrompt,
             branch,

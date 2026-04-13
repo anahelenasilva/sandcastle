@@ -14,7 +14,6 @@ import { resolvePrompt } from "./PromptResolver.js";
 import {
   WorktreeDockerSandboxFactory,
   SandboxConfig,
-  SANDBOX_WORKSPACE_DIR,
 } from "./SandboxFactory.js";
 import type { SandboxProvider, BranchStrategy } from "./SandboxProvider.js";
 import { resolveEnv } from "./EnvResolver.js";
@@ -344,7 +343,6 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
 
       const orchestrateResult = yield* orchestrate({
         hostRepoDir,
-        sandboxRepoDir: SANDBOX_WORKSPACE_DIR,
         iterations: maxIterations,
         hooks,
         prompt: resolvedPrompt,

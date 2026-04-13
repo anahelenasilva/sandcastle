@@ -116,6 +116,8 @@ export const SANDBOX_WORKSPACE_DIR = "/home/agent/workspace";
 export interface SandboxInfo {
   /** Host-side path to the worktree directory (worktree mode only). */
   readonly hostWorktreePath?: string;
+  /** Absolute path to the workspace inside the sandbox, as reported by the provider. */
+  readonly sandboxWorkspacePath: string;
 }
 
 export interface WithSandboxResult<A> {
@@ -310,6 +312,7 @@ interface AcquireResult {
   worktreeInfo: WorktreeManager.WorktreeInfo;
   handle: BindMountSandboxHandle;
   sandboxLayer: Layer.Layer<Sandbox>;
+  workspacePath: string;
 }
 
 export const WorktreeDockerSandboxFactory = {
@@ -349,8 +352,8 @@ export const WorktreeDockerSandboxFactory = {
                 copyPaths,
               ),
               // Use
-              ({ sandboxLayer }) =>
-                makeEffect({}).pipe(
+              ({ sandboxLayer, workspacePath }) =>
+                makeEffect({ sandboxWorkspacePath: workspacePath }).pipe(
                   Effect.provide(sandboxLayer),
                 ) as Effect.Effect<A, E | DockerError, Exclude<R, Sandbox>>,
               // Release: sync commits back to host, then close
@@ -401,8 +404,8 @@ export const WorktreeDockerSandboxFactory = {
                     SANDBOX_WORKSPACE_DIR,
                   ),
                   // Use
-                  ({ sandboxLayer }) =>
-                    makeEffect({}).pipe(
+                  ({ sandboxLayer, workspacePath }) =>
+                    makeEffect({ sandboxWorkspacePath: workspacePath }).pipe(
                       Effect.provide(sandboxLayer),
                     ) as Effect.Effect<A, E | DockerError, Exclude<R, Sandbox>>,
                   // Release
@@ -494,21 +497,29 @@ export const WorktreeDockerSandboxFactory = {
                           gitMounts,
                           SANDBOX_WORKSPACE_DIR,
                         ).pipe(
-                          Effect.map(({ handle, sandboxLayer }) => ({
-                            worktreeInfo,
-                            handle,
-                            sandboxLayer,
-                          })),
+                          Effect.map(
+                            ({ handle, sandboxLayer, workspacePath }) => ({
+                              worktreeInfo,
+                              handle,
+                              sandboxLayer,
+                              workspacePath,
+                            }),
+                          ),
                         ),
                     ),
                   );
                 }),
               ),
             // Use
-            ({ worktreeInfo, sandboxLayer }) =>
-              makeEffect({ hostWorktreePath: worktreeInfo.path }).pipe(
-                Effect.provide(sandboxLayer),
-              ) as Effect.Effect<A, E | DockerError, Exclude<R, Sandbox>>,
+            ({ worktreeInfo, sandboxLayer, workspacePath }) =>
+              makeEffect({
+                hostWorktreePath: worktreeInfo.path,
+                sandboxWorkspacePath: workspacePath,
+              }).pipe(Effect.provide(sandboxLayer)) as Effect.Effect<
+                A,
+                E | DockerError,
+                Exclude<R, Sandbox>
+              >,
             // Release: close provider handle, then remove/preserve worktree based on dirty state.
             ({ worktreeInfo, handle }, exit) =>
               Effect.tryPromise({
