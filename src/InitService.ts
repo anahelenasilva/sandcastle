@@ -33,6 +33,11 @@ const TEMPLATES: TemplateMetadata[] = [
     description:
       "Plans parallelizable issues, executes on separate branches, merges",
   },
+  {
+    name: "parallel-planner-with-review",
+    description:
+      "Plans parallelizable issues, executes with per-branch review, merges",
+  },
 ];
 
 export const listTemplates = (): TemplateMetadata[] => TEMPLATES;

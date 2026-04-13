@@ -669,6 +669,186 @@ describe("InitService scaffold", () => {
     });
   });
 
+  describe("parallel-planner-with-review template", () => {
+    it("produces main.mts, plan-prompt.md, implement-prompt.md, review-prompt.md, merge-prompt.md", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const configDir = join(dir, ".sandcastle");
+      const { access } = await import("node:fs/promises");
+
+      await expect(
+        access(join(configDir, "main.mts")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "plan-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "implement-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "review-prompt.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(configDir, "merge-prompt.md")),
+      ).resolves.toBeUndefined();
+    });
+
+    it("main.mts imports from @ai-hero/sandcastle", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain('"@ai-hero/sandcastle"');
+    });
+
+    it("main.mts uses createSandbox for shared sandbox per branch", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("createSandbox");
+      expect(mainTs).toContain("sandbox.run");
+      expect(mainTs).toContain("sandbox.close");
+    });
+
+    it("main.mts runs implementer then reviewer sequentially within each sandbox", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("implement-prompt.md");
+      expect(mainTs).toContain("review-prompt.md");
+      expect(mainTs).toContain("implement.commits.length > 0");
+    });
+
+    it("main.mts uses Promise.allSettled for parallel execution", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("Promise.allSettled");
+    });
+
+    it("main.mts has correct maxIterations: planner=1, implementer=100, reviewer=1, merger=1", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      // Check planner maxIterations: 1 (near "planner" name)
+      const plannerSection = mainTs.slice(
+        mainTs.indexOf('name: "planner"') - 200,
+        mainTs.indexOf('name: "planner"') + 200,
+      );
+      expect(plannerSection).toContain("maxIterations: 1");
+
+      // Check implementer maxIterations: 100
+      const implementerSection = mainTs.slice(
+        mainTs.indexOf('name: "implementer"') - 200,
+        mainTs.indexOf('name: "implementer"') + 200,
+      );
+      expect(implementerSection).toContain("maxIterations: 100");
+
+      // Check reviewer maxIterations: 1
+      const reviewerSection = mainTs.slice(
+        mainTs.indexOf('name: "reviewer"') - 200,
+        mainTs.indexOf('name: "reviewer"') + 200,
+      );
+      expect(reviewerSection).toContain("maxIterations: 1");
+
+      // Check merger maxIterations: 1
+      const mergerSection = mainTs.slice(
+        mainTs.indexOf('name: "merger"') - 200,
+        mainTs.indexOf('name: "merger"') + 200,
+      );
+      expect(mergerSection).toContain("maxIterations: 1");
+    });
+
+    it("implement-prompt.md contains {{ISSUE_NUMBER}}, {{ISSUE_TITLE}}, {{BRANCH}} prompt arguments", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "implement-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("{{ISSUE_NUMBER}}");
+      expect(prompt).toContain("{{ISSUE_TITLE}}");
+      expect(prompt).toContain("{{BRANCH}}");
+    });
+
+    it("review-prompt.md contains {{BRANCH}} prompt argument", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "review-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("{{BRANCH}}");
+    });
+
+    it("merge-prompt.md contains {{BRANCHES}} and {{ISSUES}} prompt arguments", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "merge-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("{{BRANCHES}}");
+      expect(prompt).toContain("{{ISSUES}}");
+    });
+
+    it("parallel-planner-with-review appears in listTemplates()", () => {
+      const templates = listTemplates();
+      expect(
+        templates.some((t) => t.name === "parallel-planner-with-review"),
+      ).toBe(true);
+    });
+
+    it("common files are still generated", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const configDir = join(dir, ".sandcastle");
+      const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+      expect(dockerfile).toBe(claudeCodeAgent.dockerfileTemplate);
+
+      const envExample = await readFile(
+        join(configDir, ".env.example"),
+        "utf-8",
+      );
+      expect(envExample).toContain("ANTHROPIC_API_KEY=");
+    });
+
+    it("main.mts references the specified model for all factory calls", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(mainTs).toContain("claude-opus-4-6");
+    });
+  });
+
   // --- ESM extension detection ---
 
   describe("main file extension detection", () => {

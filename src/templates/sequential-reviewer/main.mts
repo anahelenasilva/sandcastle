@@ -88,7 +88,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     copyToSandbox,
     sandbox: docker({ branchStrategy: { type: "branch", branch } }),
     name: "reviewer",
-    maxIterations: 10,
+    maxIterations: 1,
     agent: sandcastle.claudeCode("claude-sonnet-4-6"),
     promptFile: "./.sandcastle/review-prompt.md",
     // Prompt arguments substitute {{BRANCH}} in review-prompt.md before the

@@ -375,12 +375,13 @@ Tell the agent to output your chosen string(s) in the prompt, and the orchestrat
 
 `sandcastle init` prompts you to choose a template, which scaffolds a ready-to-use prompt and `main.mts` suited to a specific workflow. If your project's `package.json` has `"type": "module"`, the file will be named `main.ts` instead. Four templates are available:
 
-| Template              | Description                                                             |
-| --------------------- | ----------------------------------------------------------------------- |
-| `blank`               | Bare scaffold — write your own prompt and orchestration                 |
-| `simple-loop`         | Picks GitHub issues one by one and closes them                          |
-| `sequential-reviewer` | Implements issues one by one, with a code review step after each        |
-| `parallel-planner`    | Plans parallelizable issues, executes on separate branches, then merges |
+| Template                       | Description                                                               |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `blank`                        | Bare scaffold — write your own prompt and orchestration                   |
+| `simple-loop`                  | Picks GitHub issues one by one and closes them                            |
+| `sequential-reviewer`          | Implements issues one by one, with a code review step after each          |
+| `parallel-planner`             | Plans parallelizable issues, executes on separate branches, then merges   |
+| `parallel-planner-with-review` | Plans parallelizable issues, executes with per-branch review, then merges |
 
 Select a template during `sandcastle init` when prompted, or re-run init in a fresh repo to try a different one.
 
