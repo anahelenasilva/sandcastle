@@ -27,7 +27,7 @@ export interface BindMountSandboxHandle {
    */
   exec(
     command: string,
-    options?: { onLine?: (line: string) => void; cwd?: string },
+    options?: { onLine?: (line: string) => void; cwd?: string; sudo?: boolean },
   ): Promise<ExecResult>;
   /** Tear down the sandbox. */
   close(): Promise<void>;
@@ -76,7 +76,7 @@ export interface IsolatedSandboxHandle {
    */
   exec(
     command: string,
-    options?: { onLine?: (line: string) => void; cwd?: string },
+    options?: { onLine?: (line: string) => void; cwd?: string; sudo?: boolean },
   ): Promise<ExecResult>;
   /** Copy a file or directory from the host into the sandbox. */
   copyIn(hostPath: string, sandboxPath: string): Promise<void>;

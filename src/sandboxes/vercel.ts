@@ -164,7 +164,11 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
 
         exec: async (
           command: string,
-          opts?: { onLine?: (line: string) => void; cwd?: string },
+          opts?: {
+            onLine?: (line: string) => void;
+            cwd?: string;
+            sudo?: boolean;
+          },
         ): Promise<ExecResult> => {
           if (opts?.onLine) {
             const onLine = opts.onLine;
@@ -206,6 +210,7 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
               cwd: opts?.cwd ?? VERCEL_WORKSPACE_PATH,
               stdout: stdoutWritable,
               stderr: stderrWritable,
+              ...(opts?.sudo ? { sudo: true } : {}),
             });
 
             return {
@@ -219,6 +224,7 @@ export const vercel = (options?: VercelOptions): IsolatedSandboxProvider =>
             cmd: "sh",
             args: ["-c", command],
             cwd: opts?.cwd ?? VERCEL_WORKSPACE_PATH,
+            ...(opts?.sudo ? { sudo: true } : {}),
           });
 
           const stdout = await result.stdout();

@@ -92,8 +92,13 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
 
         exec: async (
           command: string,
-          opts?: { onLine?: (line: string) => void; cwd?: string },
+          opts?: {
+            onLine?: (line: string) => void;
+            cwd?: string;
+            sudo?: boolean;
+          },
         ): Promise<ExecResult> => {
+          const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
           if (opts?.onLine) {
             const onLine = opts.onLine;
             const sessionId = `sandcastle-${crypto.randomUUID()}`;
@@ -103,7 +108,7 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
               const execResponse = await sandbox.process.executeSessionCommand(
                 sessionId,
                 {
-                  command: `cd ${opts?.cwd ?? workspacePath} && ${command}`,
+                  command: `cd ${opts?.cwd ?? workspacePath} && ${effectiveCommand}`,
                   async: true,
                 },
               );
@@ -152,7 +157,7 @@ export const daytona = (options?: DaytonaOptions): IsolatedSandboxProvider =>
           }
 
           const response = await sandbox.process.executeCommand(
-            command,
+            effectiveCommand,
             opts?.cwd ?? workspacePath,
           );
           return {

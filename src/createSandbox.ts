@@ -41,7 +41,10 @@ export interface CreateSandboxOptions {
   readonly sandbox: SandboxProvider;
   /** One-time setup hooks to run when the sandbox is first created. */
   readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{ command: string }>;
+    readonly onSandboxReady?: ReadonlyArray<{
+      command: string;
+      sudo?: boolean;
+    }>;
   };
   /** Paths relative to the host repo root to copy into the worktree at creation time. */
   readonly copyToSandbox?: string[];
@@ -193,7 +196,10 @@ export const createSandbox = async (
           `git config --global --add safe.directory "${sandboxRepoDir}"`,
         );
         for (const hook of options.hooks!.onSandboxReady!) {
-          yield* sandbox.exec(hook.command, { cwd: sandboxRepoDir });
+          yield* sandbox.exec(hook.command, {
+            cwd: sandboxRepoDir,
+            sudo: hook.sudo,
+          });
         }
       }).pipe(Effect.provide(sandboxLayer)),
     );

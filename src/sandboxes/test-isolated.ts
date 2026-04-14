@@ -38,7 +38,11 @@ export const testIsolated = (): IsolatedSandboxProvider =>
 
         exec: (
           command: string,
-          options?: { onLine?: (line: string) => void; cwd?: string },
+          options?: {
+            onLine?: (line: string) => void;
+            cwd?: string;
+            sudo?: boolean;
+          },
         ): Promise<ExecResult> => {
           if (options?.onLine) {
             const onLine = options.onLine;

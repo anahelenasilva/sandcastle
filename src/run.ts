@@ -143,7 +143,10 @@ export interface RunOptions {
   readonly maxIterations?: number;
   /** Hooks to run during sandbox lifecycle */
   readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{ command: string }>;
+    readonly onSandboxReady?: ReadonlyArray<{
+      command: string;
+      sudo?: boolean;
+    }>;
   };
   /** Key-value map for {{KEY}} placeholder substitution in prompts */
   readonly promptArgs?: PromptArgs;

@@ -179,6 +179,58 @@ describe("withSandboxLifecycle (worktree mode)", () => {
     );
   });
 
+  it("onSandboxReady hooks pass sudo option through to exec", async () => {
+    const { hostDir, worktreeDir } = await setupWorktree();
+
+    const execCalls: Array<{
+      command: string;
+      options?: { sudo?: boolean; cwd?: string };
+    }> = [];
+
+    // Custom sandbox layer that records exec calls
+    const spySandboxLayer = Layer.succeed(Sandbox, {
+      exec: (command, options) => {
+        execCalls.push({ command, options });
+        return Effect.succeed({ stdout: "", stderr: "", exitCode: 0 });
+      },
+      copyIn: () => Effect.succeed(undefined as never),
+      copyFileOut: () => Effect.succeed(undefined as never),
+    });
+
+    await Effect.runPromise(
+      withSandboxLifecycle(
+        {
+          hostRepoDir: hostDir,
+          sandboxRepoDir: worktreeDir,
+          branch: "sandcastle/test",
+          hooks: {
+            onSandboxReady: [
+              { command: "npm install" },
+              { command: "apt-get install -y ffmpeg", sudo: true },
+            ],
+          },
+        },
+        () => Effect.succeed("ok"),
+      ).pipe(Effect.provide(Layer.merge(spySandboxLayer, testDisplayLayer))),
+    );
+
+    // Find the hook exec calls (after git config calls)
+    const hookCalls = execCalls.filter(
+      (c) =>
+        c.command === "npm install" ||
+        c.command === "apt-get install -y ffmpeg",
+    );
+    expect(hookCalls).toHaveLength(2);
+    expect(hookCalls[0]).toEqual(
+      expect.objectContaining({ command: "npm install" }),
+    );
+    expect(hookCalls[0]!.options?.sudo).toBeUndefined();
+    expect(hookCalls[1]).toEqual(
+      expect.objectContaining({ command: "apt-get install -y ffmpeg" }),
+    );
+    expect(hookCalls[1]!.options?.sudo).toBe(true);
+  });
+
   it("returns commits made in the worktree", async () => {
     const { hostDir, worktreeDir, layer } = await setupWorktree();
 

@@ -823,7 +823,7 @@ Add your project-specific dependencies (e.g., language runtimes, build tools) to
 
 ### Hooks
 
-Hooks are arrays of `{ "command": "..." }` objects executed sequentially inside the sandbox. If any command exits with a non-zero code, execution stops immediately with an error.
+Hooks are arrays of `{ command, sudo? }` objects executed sequentially inside the sandbox. If any command exits with a non-zero code, execution stops immediately with an error.
 
 | Hook             | When it runs               | Working directory      |
 | ---------------- | -------------------------- | ---------------------- |
@@ -831,12 +831,15 @@ Hooks are arrays of `{ "command": "..." }` objects executed sequentially inside 
 
 **`onSandboxReady`** runs after the sandbox is ready. Use it for dependency installation or build steps (e.g., `npm install`).
 
-Pass hooks programmatically via `run()`:
+Set `sudo: true` to run a command with elevated privileges inside the sandbox:
 
 ```ts
 await run({
   hooks: {
-    onSandboxReady: [{ command: "npm install" }],
+    onSandboxReady: [
+      { command: "apt-get install -y ffmpeg", sudo: true },
+      { command: "npm install" },
+    ],
   },
   // ...
 });

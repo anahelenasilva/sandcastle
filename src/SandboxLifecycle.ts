@@ -12,7 +12,7 @@ import {
 const execOk = (
   sandbox: SandboxService,
   command: string,
-  options?: { cwd?: string },
+  options?: { cwd?: string; sudo?: boolean },
 ): Effect.Effect<ExecResult, ExecError> =>
   Effect.flatMap(sandbox.exec(command, options), (result) =>
     result.exitCode !== 0
@@ -28,7 +28,10 @@ const execOk = (
 const execAsync = promisify(exec);
 
 export type SandboxHooks = {
-  readonly onSandboxReady?: ReadonlyArray<{ readonly command: string }>;
+  readonly onSandboxReady?: ReadonlyArray<{
+    readonly command: string;
+    readonly sudo?: boolean;
+  }>;
 };
 
 export interface SandboxLifecycleOptions {
@@ -126,7 +129,10 @@ export const withSandboxLifecycle = <A>(
         if (hooks?.onSandboxReady?.length) {
           for (const hook of hooks.onSandboxReady) {
             message(hook.command);
-            yield* execOk(sandbox, hook.command, { cwd: sandboxRepoDir });
+            yield* execOk(sandbox, hook.command, {
+              cwd: sandboxRepoDir,
+              sudo: hook.sudo,
+            });
           }
         }
       }),

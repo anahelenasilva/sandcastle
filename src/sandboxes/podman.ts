@@ -143,11 +143,16 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
 
         exec: (
           command: string,
-          opts?: { onLine?: (line: string) => void; cwd?: string },
+          opts?: {
+            onLine?: (line: string) => void;
+            cwd?: string;
+            sudo?: boolean;
+          },
         ): Promise<ExecResult> => {
+          const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
           const args = ["exec"];
           if (opts?.cwd) args.push("-w", opts.cwd);
-          args.push(containerName, "sh", "-c", command);
+          args.push(containerName, "sh", "-c", effectiveCommand);
 
           if (opts?.onLine) {
             const onLine = opts.onLine;
