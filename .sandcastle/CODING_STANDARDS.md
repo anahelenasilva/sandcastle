@@ -24,6 +24,10 @@ Do not use lazy `import()`-style imports when importing Node built-ins. Just use
 
 ---
 
+Optional parameters passed to functions should be scrutinised extremely carefully. They are a huge source of bugs (by omission). Prioritise correctness over backwards compatibility.
+
+---
+
 ## Testing
 
 ### Core Principle
