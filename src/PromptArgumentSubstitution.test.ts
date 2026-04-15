@@ -1,9 +1,10 @@
 import { Effect, Layer, Ref } from "effect";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { type DisplayEntry, SilentDisplay } from "./Display.js";
 import {
   substitutePromptArgs,
   validateNoBuiltInArgOverride,
+  findMissingPromptArgKeys,
   BUILT_IN_PROMPT_ARG_KEYS,
 } from "./PromptArgumentSubstitution.js";
 import { PromptError } from "./errors.js";
@@ -248,13 +249,6 @@ describe("BUILT_IN_PROMPT_ARG_KEYS", () => {
 });
 
 describe("findMissingPromptArgKeys", () => {
-  let findMissingPromptArgKeys: typeof import("./PromptArgumentSubstitution.js").findMissingPromptArgKeys;
-
-  beforeAll(async () => {
-    const mod = await import("./PromptArgumentSubstitution.js");
-    findMissingPromptArgKeys = mod.findMissingPromptArgKeys;
-  });
-
   it("returns empty array when prompt has no placeholders", () => {
     expect(findMissingPromptArgKeys("plain prompt", {})).toEqual([]);
   });
