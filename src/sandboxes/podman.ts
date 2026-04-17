@@ -25,8 +25,10 @@ import {
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
+import { Effect } from "effect";
 import type { MountConfig } from "../MountConfig.js";
 import { SANDBOX_REPO_DIR } from "../SandboxFactory.js";
+import { chownInContainer } from "../PodmanLifecycle.js";
 
 export interface PodmanOptions {
   /** Podman image name (default: derived from repo directory name). */
@@ -160,6 +162,13 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
           },
         );
       });
+
+      // Fix /home/agent ownership for the container user (parity with Docker provider).
+      // On macOS rootless Podman with --userns=keep-id, the host UID may differ
+      // from UID 1000 in the image, making /home/agent unwritable.
+      await Effect.runPromise(
+        chownInContainer(containerName, `${hostUid}:${hostGid}`, "/home/agent"),
+      );
 
       // Set up signal handlers for cleanup
       const onExit = () => {
