@@ -1,15 +1,25 @@
 import { Deferred, Effect } from "effect";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
-import { AgentError, AgentIdleTimeoutError } from "./errors.js";
+import {
+  AgentError,
+  AgentIdleTimeoutError,
+  SessionCaptureError,
+} from "./errors.js";
 import type { SandboxError } from "./errors.js";
 import type { SandboxService } from "./SandboxFactory.js";
-import { SandboxFactory } from "./SandboxFactory.js";
+import { SandboxFactory, SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
-import type { AgentProvider } from "./AgentProvider.js";
+import type { AgentProvider, IterationUsage } from "./AgentProvider.js";
 import { TextDeltaBuffer } from "./TextDeltaBuffer.js";
+import {
+  hostSessionStore,
+  sandboxSessionStore,
+  transferSession,
+} from "./SessionStore.js";
+import { SessionPaths } from "./SessionPaths.js";
 
-export type { ParsedStreamEvent } from "./AgentProvider.js";
+export type { ParsedStreamEvent, IterationUsage } from "./AgentProvider.js";
 
 const IDLE_WARNING_INTERVAL_MS = 60_000;
 
@@ -23,9 +33,12 @@ const invokeAgent = (
   onToolCall: (name: string, formattedArgs: string) => void,
   onIdleWarning: (minutes: number) => void,
   idleWarningIntervalMs: number = IDLE_WARNING_INTERVAL_MS,
-): Effect.Effect<{ result: string }, SandboxError> =>
+  resumeSession?: string,
+  signal?: AbortSignal,
+): Effect.Effect<{ result: string; sessionId?: string }, SandboxError> =>
   Effect.gen(function* () {
     let resultText = "";
+    let sessionId: string | undefined;
 
     // Deferred that will be failed when the idle timer fires
     const timeoutSignal = yield* Deferred.make<never, AgentIdleTimeoutError>();
@@ -61,30 +74,49 @@ const invokeAgent = (
       startWarningInterval();
     };
 
+    // Deferred that will be resolved (as a defect) when the AbortSignal fires.
+    // Uses Effect.die so the abort reason propagates as-is to run().
+    const abortDeferred = yield* Deferred.make<never, never>();
+    let abortCleanup: (() => void) | null = null;
+    if (signal) {
+      if (signal.aborted) {
+        return yield* Effect.die(signal.reason);
+      }
+      const onAbort = () => {
+        Effect.runPromise(Deferred.die(abortDeferred, signal.reason)).catch(
+          () => {},
+        );
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      abortCleanup = () => signal.removeEventListener("abort", onAbort);
+    }
+
     resetIdleTimer();
 
     const execEffect = Effect.gen(function* () {
-      const execResult = yield* sandbox.exec(
-        provider.buildPrintCommand({
-          prompt,
-          dangerouslySkipPermissions: true,
-        }),
-        {
-          onLine: (line) => {
-            resetIdleTimer();
-            for (const parsed of provider.parseStreamLine(line)) {
-              if (parsed.type === "text") {
-                onText(parsed.text);
-              } else if (parsed.type === "result") {
-                resultText = parsed.result;
-              } else if (parsed.type === "tool_call") {
-                onToolCall(parsed.name, parsed.args);
-              }
+      const printCmd = provider.buildPrintCommand({
+        prompt,
+        dangerouslySkipPermissions: true,
+        resumeSession,
+      });
+      const execResult = yield* sandbox.exec(printCmd.command, {
+        onLine: (line) => {
+          resetIdleTimer();
+          for (const parsed of provider.parseStreamLine(line)) {
+            if (parsed.type === "text") {
+              onText(parsed.text);
+            } else if (parsed.type === "result") {
+              resultText = parsed.result;
+            } else if (parsed.type === "tool_call") {
+              onToolCall(parsed.name, parsed.args);
+            } else if (parsed.type === "session_id") {
+              sessionId = parsed.sessionId;
             }
-          },
-          cwd: sandboxRepoDir,
+          }
         },
-      );
+        cwd: sandboxRepoDir,
+        stdin: printCmd.stdin,
+      });
 
       if (execResult.exitCode !== 0) {
         return yield* Effect.fail(
@@ -94,7 +126,7 @@ const invokeAgent = (
         );
       }
 
-      return { result: resultText || execResult.stdout };
+      return { result: resultText || execResult.stdout, sessionId };
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -110,7 +142,21 @@ const invokeAgent = (
       ),
     );
 
-    return yield* Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
+    let raced = Effect.raceFirst(execEffect, Deferred.await(timeoutSignal));
+    if (signal) {
+      raced = Effect.raceFirst(
+        raced,
+        Deferred.await(abortDeferred) as Effect.Effect<never, never>,
+      );
+    }
+
+    return yield* raced.pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          abortCleanup?.();
+        }),
+      ),
+    );
   });
 
 const DEFAULT_COMPLETION_SIGNAL = "<promise>COMPLETE</promise>";
@@ -130,10 +176,25 @@ export interface OrchestrateOptions {
   readonly name?: string;
   /** @internal Test-only override for the idle warning interval in milliseconds. Default: 60000 (1 minute). */
   readonly _idleWarningIntervalMs?: number;
+  /** Resume a prior Claude Code session by ID. Applied to iteration 1 only. */
+  readonly resumeSession?: string;
+  /** An AbortSignal that cancels the orchestration when aborted. */
+  readonly signal?: AbortSignal;
+}
+
+/** Per-iteration result carrying an optional session ID. */
+export interface IterationResult {
+  /** Claude Code session ID extracted from the init line, or undefined for non-Claude agents. */
+  readonly sessionId?: string;
+  /** Absolute host path to the captured session JSONL, or undefined when capture is disabled or provider is non-Claude. */
+  readonly sessionFilePath?: string;
+  /** Token usage snapshot from the last assistant message in the session, or undefined when capture is disabled or provider does not support usage parsing. */
+  readonly usage?: IterationUsage;
 }
 
 export interface OrchestrateResult {
-  readonly iterationsRun: number;
+  /** Per-iteration results (use `iterations.length` for the count). */
+  readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
   readonly completionSignal?: string;
   readonly stdout: string;
@@ -145,12 +206,17 @@ export interface OrchestrateResult {
 
 export const orchestrate = (
   options: OrchestrateOptions,
-): Effect.Effect<OrchestrateResult, SandboxError, SandboxFactory | Display> => {
+): Effect.Effect<
+  OrchestrateResult,
+  SandboxError,
+  SandboxFactory | Display | SessionPaths
+> => {
   const idleTimeoutMs =
     (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
+    const { hostProjectsDir, sandboxProjectsDir } = yield* SessionPaths;
     const { hostRepoDir, iterations, hooks, prompt, branch, provider } =
       options;
     let completionSignals: string[];
@@ -166,15 +232,22 @@ export const orchestrate = (
       options.name ? `[${options.name}] ${msg}` : msg;
 
     const allCommits: { sha: string }[] = [];
+    const allIterations: IterationResult[] = [];
     let allStdout = "";
     let resolvedBranch = "";
     let iterationPreservedPath: string | undefined;
 
+    // Helper: check abort signal and bail via defect so run() can
+    // re-throw the signal's reason verbatim (no Sandcastle wrapping).
+    const checkAbort = (): Effect.Effect<void> =>
+      options.signal?.aborted ? Effect.die(options.signal.reason) : Effect.void;
+
     for (let i = 1; i <= iterations; i++) {
+      yield* checkAbort();
       yield* display.status(label(`Iteration ${i}/${iterations}`), "info");
 
       const sandboxResult = yield* factory.withSandbox(
-        ({ hostWorktreePath, sandboxRepoPath, applyToHost }) =>
+        ({ hostWorktreePath, sandboxRepoPath, applyToHost, bindMountHandle }) =>
           withSandboxLifecycle(
             {
               hostRepoDir,
@@ -183,9 +256,32 @@ export const orchestrate = (
               branch,
               hostWorktreePath,
               applyToHost,
+              signal: options.signal,
             },
             (ctx) =>
               Effect.gen(function* () {
+                // Resume session: transfer JSONL from host to sandbox before iteration 1
+                const iterationResumeSession =
+                  i === 1 ? options.resumeSession : undefined;
+                if (iterationResumeSession && bindMountHandle) {
+                  yield* display.status(label("Resuming session"), "info");
+                  const sbStore = sandboxSessionStore(
+                    ctx.sandboxRepoDir,
+                    bindMountHandle,
+                    sandboxProjectsDir,
+                  );
+                  const hStore = hostSessionStore(hostRepoDir, hostProjectsDir);
+                  yield* Effect.tryPromise({
+                    try: () =>
+                      transferSession(hStore, sbStore, iterationResumeSession),
+                    catch: (e) =>
+                      new SessionCaptureError({
+                        message: `Session resume failed: ${e instanceof Error ? e.message : String(e)}`,
+                        sessionId: iterationResumeSession,
+                      }),
+                  });
+                }
+
                 // Preprocess prompt (run !`command` expressions inside sandbox)
                 const fullPrompt = yield* preprocessPrompt(
                   prompt,
@@ -214,7 +310,7 @@ export const orchestrate = (
                       : `Agent idle for ${minutes} minutes`;
                   Effect.runPromise(display.status(label(msg), "warn"));
                 };
-                const { result: agentOutput } = yield* invokeAgent(
+                const { result: agentOutput, sessionId } = yield* invokeAgent(
                   ctx.sandbox,
                   ctx.sandboxRepoDir,
                   fullPrompt,
@@ -224,12 +320,48 @@ export const orchestrate = (
                   onToolCall,
                   onIdleWarning,
                   options._idleWarningIntervalMs,
+                  iterationResumeSession,
+                  options.signal,
                 );
 
                 // Flush any remaining buffered text deltas
                 textBuffer.dispose();
 
                 yield* display.status(label("Agent stopped"), "info");
+
+                // Capture session while sandbox is still alive
+                let sessionFilePath: string | undefined;
+                let usage: IterationUsage | undefined;
+                if (provider.captureSessions && sessionId && bindMountHandle) {
+                  yield* display.status(label("Capturing session"), "info");
+                  const sbStore = sandboxSessionStore(
+                    ctx.sandboxRepoDir,
+                    bindMountHandle,
+                    sandboxProjectsDir,
+                  );
+                  const hStore = hostSessionStore(hostRepoDir, hostProjectsDir);
+                  yield* Effect.tryPromise({
+                    try: () => transferSession(sbStore, hStore, sessionId),
+                    catch: (e) =>
+                      new SessionCaptureError({
+                        message: `Session capture failed: ${e instanceof Error ? e.message : String(e)}`,
+                        sessionId,
+                      }),
+                  });
+                  sessionFilePath = hStore.sessionFilePath(sessionId);
+
+                  // Parse token usage from the captured session JSONL
+                  if (provider.parseSessionUsage) {
+                    const content = yield* Effect.promise(() =>
+                      hStore
+                        .readSession(sessionId)
+                        .catch(() => undefined as string | undefined),
+                    );
+                    if (content) {
+                      usage = provider.parseSessionUsage(content);
+                    }
+                  }
+                }
 
                 // Check completion signal
                 const matchedSignal = completionSignals.find((sig) =>
@@ -238,6 +370,9 @@ export const orchestrate = (
                 return {
                   completionSignal: matchedSignal,
                   stdout: agentOutput,
+                  sessionId,
+                  sessionFilePath,
+                  usage,
                 } as const;
               }),
           ),
@@ -250,13 +385,19 @@ export const orchestrate = (
       allStdout += lifecycleResult.result.stdout;
       resolvedBranch = lifecycleResult.branch;
 
+      allIterations.push({
+        sessionId: lifecycleResult.result.sessionId,
+        sessionFilePath: lifecycleResult.result.sessionFilePath,
+        usage: lifecycleResult.result.usage,
+      });
+
       if (lifecycleResult.result.completionSignal !== undefined) {
         yield* display.status(
           label(`Agent signaled completion after ${i} iteration(s).`),
           "success",
         );
         return {
-          iterationsRun: i,
+          iterations: allIterations,
           completionSignal: lifecycleResult.result.completionSignal,
           stdout: allStdout,
           commits: allCommits,
@@ -271,7 +412,7 @@ export const orchestrate = (
       "info",
     );
     return {
-      iterationsRun: iterations,
+      iterations: allIterations,
       completionSignal: undefined,
       stdout: allStdout,
       commits: allCommits,

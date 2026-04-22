@@ -1,7 +1,9 @@
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
+import { existsSync } from "node:fs";
 import path, { join } from "node:path";
 import { styleText } from "node:util";
 import { Effect, Layer } from "effect";
+import { resolveCwd } from "./resolveCwd.js";
 import type { AgentProvider } from "./AgentProvider.js";
 import {
   ClackDisplay,
@@ -9,7 +11,11 @@ import {
   FileDisplay,
   type Severity,
 } from "./Display.js";
-import { orchestrate } from "./Orchestrator.js";
+import {
+  orchestrate,
+  type IterationResult,
+  type OrchestrateResult,
+} from "./Orchestrator.js";
 import { resolvePrompt } from "./PromptResolver.js";
 import {
   WorktreeDockerSandboxFactory,
@@ -19,7 +25,10 @@ import type { SandboxProvider, BranchStrategy } from "./SandboxProvider.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { formatErrorMessage } from "./ErrorHandler.js";
 import type { SandboxError } from "./errors.js";
+import type { SandboxHooks } from "./SandboxLifecycle.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
+import { hostSessionStore } from "./SessionStore.js";
+import { defaultSessionPathsLayer } from "./SessionPaths.js";
 import { generateTempBranchName, getCurrentBranch } from "./WorktreeManager.js";
 import {
   type PromptArgs,
@@ -39,6 +48,11 @@ export interface FileDisplayStartupOptions {
   readonly logPath: string;
   readonly agentName?: string;
   readonly branch?: string;
+  /** Resolved host repo directory. When it differs from `process.cwd()`, the
+   *  log-file hint is printed as an absolute path so it can be pasted into any
+   *  terminal. When it equals `process.cwd()` (or is omitted), a relative path
+   *  is printed instead. */
+  readonly hostRepoDir?: string;
 }
 
 /**
@@ -51,9 +65,13 @@ export const printFileDisplayStartup = (
   const name = options.agentName ?? "Agent";
   const label = styleText("bold", `[${name}]`);
   const branchPart = options.branch ? ` on branch ${options.branch}` : "";
-  const relativeLogPath = path.relative(process.cwd(), options.logPath);
+  const hostRepoDir = options.hostRepoDir ?? process.cwd();
+  const displayLogPath =
+    hostRepoDir === process.cwd()
+      ? path.relative(process.cwd(), options.logPath)
+      : options.logPath;
   console.log(`${label} Started${branchPart}`);
-  console.log(styleText("dim", `  tail -f ${relativeLogPath}`));
+  console.log(styleText("dim", `  tail -f ${displayLogPath}`));
 };
 
 /**
@@ -137,19 +155,30 @@ export interface RunOptions {
   readonly agent: AgentProvider;
   /** Sandbox provider (e.g. docker({ imageName: "sandcastle:myrepo" })). */
   readonly sandbox: SandboxProvider;
+  /**
+   * Host repo directory. Replaces `process.cwd()` as the anchor for
+   * `.sandcastle/worktrees/`, `.sandcastle/.env`, `.sandcastle/logs/`,
+   * `.sandcastle/patches/`, and git operations.
+   *
+   * - Relative paths are resolved against `process.cwd()`.
+   * - Absolute paths are used as-is.
+   * - Defaults to `process.cwd()` when omitted.
+   */
+  readonly cwd?: string;
   /** Inline prompt string (mutually exclusive with promptFile) */
   readonly prompt?: string;
-  /** Path to a prompt file (mutually exclusive with prompt) */
+  /**
+   * Path to a prompt file (mutually exclusive with prompt).
+   *
+   * **Note:** `promptFile` is always resolved against `process.cwd()`, not
+   * against the `cwd` option. If you set a custom `cwd`, pass an absolute
+   * `promptFile` to avoid ambiguity.
+   */
   readonly promptFile?: string;
   /** Maximum iterations to run (default: 1) */
   readonly maxIterations?: number;
-  /** Hooks to run during sandbox lifecycle */
-  readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{
-      command: string;
-      sudo?: boolean;
-    }>;
-  };
+  /** Lifecycle hooks grouped by execution location (host or sandbox). */
+  readonly hooks?: SandboxHooks;
   /** Key-value map for {{KEY}} placeholder substitution in prompts */
   readonly promptArgs?: PromptArgs;
   /** Logging mode (default: { type: 'file' } with auto-generated path under .sandcastle/logs/) */
@@ -165,13 +194,27 @@ export interface RunOptions {
   /** Branch strategy — controls how the agent's changes relate to branches.
    * Defaults to { type: "head" } for bind-mount providers and { type: "merge-to-head" } for isolated providers. */
   readonly branchStrategy?: BranchStrategy;
-  /** When false, reuse an existing worktree for the target branch instead of failing on collision. Default: true. */
-  readonly throwOnDuplicateWorktree?: boolean;
+  /** Resume a prior Claude Code session by ID. The session JSONL must exist on the host. Incompatible with maxIterations > 1. */
+  readonly resumeSession?: string;
+  /**
+   * An `AbortSignal` that cancels the run when aborted.
+   *
+   * - If `signal.aborted` is already `true` at entry, `run()` rejects
+   *   immediately without doing any setup work.
+   * - Aborting mid-iteration kills the in-flight agent subprocess.
+   * - Phase boundaries (between iterations) also check the signal.
+   * - The rejected promise surfaces `signal.reason` via
+   *   `signal.throwIfAborted()` — no Sandcastle-specific wrapping.
+   * - The worktree is preserved on disk after abort (error-path behavior).
+   */
+  readonly signal?: AbortSignal;
 }
 
+export type { IterationResult, IterationUsage } from "./Orchestrator.js";
+
 export interface RunResult {
-  /** Number of iterations the agent completed during this run. */
-  readonly iterationsRun: number;
+  /** Per-iteration results (use `iterations.length` for the count). */
+  readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if no signal fired before the iteration limit. */
   readonly completionSignal?: string;
   /** Combined stdout output from all agent iterations. */
@@ -187,6 +230,9 @@ export interface RunResult {
 }
 
 export const run = async (options: RunOptions): Promise<RunResult> => {
+  // If signal is already aborted, reject immediately without any setup
+  options.signal?.throwIfAborted();
+
   const {
     prompt,
     promptFile,
@@ -222,11 +268,32 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
     );
   }
 
+  // Validate: resumeSession + maxIterations > 1 is not allowed
+  if (options.resumeSession && maxIterations > 1) {
+    throw new Error(
+      "resumeSession cannot be combined with maxIterations > 1. " +
+        "Resume applies to iteration 1 only; multi-iteration resume semantics are not supported.",
+    );
+  }
+
   // Extract explicit branch when in branch mode
   const branch: string | undefined =
     branchStrategy.type === "branch" ? branchStrategy.branch : undefined;
 
-  const hostRepoDir = process.cwd();
+  const hostRepoDir = await Effect.runPromise(
+    resolveCwd(options.cwd).pipe(Effect.provide(NodeContext.layer)),
+  );
+
+  // Validate: resumeSession file must exist on the host
+  if (options.resumeSession) {
+    const hStore = hostSessionStore(hostRepoDir);
+    const sessionPath = hStore.sessionFilePath(options.resumeSession);
+    if (!existsSync(sessionPath)) {
+      throw new Error(
+        `resumeSession "${options.resumeSession}" not found: expected session file at ${sessionPath}`,
+      );
+    }
+  }
 
   // Resolve prompt
   const rawPrompt = await Effect.runPromise(
@@ -282,6 +349,7 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
             logPath: resolvedLogging.path,
             agentName: options.name,
             branch: resolvedBranch,
+            hostRepoDir,
           });
           return Layer.provide(
             FileDisplay.layer(resolvedLogging.path),
@@ -300,14 +368,19 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
         name: options.name,
         sandboxProvider: options.sandbox,
         branchStrategy,
-        throwOnDuplicateWorktree: options.throwOnDuplicateWorktree,
+        hooks,
+        signal: options.signal,
       }),
       NodeFileSystem.layer,
       displayLayer,
     ),
   );
 
-  const runLayer = Layer.merge(factoryLayer, displayLayer);
+  const runLayer = Layer.mergeAll(
+    factoryLayer,
+    displayLayer,
+    defaultSessionPathsLayer,
+  );
 
   const baseEffect = Effect.gen(function* () {
     const d = yield* Display;
@@ -355,11 +428,13 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
       completionSignal: options.completionSignal,
       idleTimeoutSeconds: options.idleTimeoutSeconds,
       name: options.name,
+      resumeSession: options.resumeSession,
+      signal: options.signal,
     });
 
     const completion = buildCompletionMessage(
       orchestrateResult.completionSignal,
-      orchestrateResult.iterationsRun,
+      orchestrateResult.iterations.length,
     );
     yield* d.status(completion.message, completion.severity);
 
@@ -384,9 +459,16 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
         )
       : baseEffect;
 
-  const result = await Effect.runPromise(
-    withErrorLog.pipe(Effect.provide(runLayer)),
-  );
+  let result: OrchestrateResult;
+  try {
+    result = await Effect.runPromise(
+      withErrorLog.pipe(Effect.provide(runLayer)),
+    );
+  } catch (error: unknown) {
+    // If the signal was aborted, surface its reason verbatim (no wrapping)
+    options.signal?.throwIfAborted();
+    throw error;
+  }
 
   return {
     ...result,

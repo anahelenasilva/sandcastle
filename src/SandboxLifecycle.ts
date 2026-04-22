@@ -1,6 +1,6 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { Display } from "./Display.js";
 import {
   CommitCollectionTimeoutError,
@@ -59,11 +59,54 @@ const execOkWithGitTimeout = (
 const execAsync = promisify(exec);
 
 export type SandboxHooks = {
-  readonly onSandboxReady?: ReadonlyArray<{
-    readonly command: string;
-    readonly sudo?: boolean;
-  }>;
+  readonly host?: {
+    readonly onWorktreeReady?: ReadonlyArray<{
+      readonly command: string;
+    }>;
+    readonly onSandboxReady?: ReadonlyArray<{
+      readonly command: string;
+    }>;
+  };
+  readonly sandbox?: {
+    readonly onSandboxReady?: ReadonlyArray<{
+      readonly command: string;
+      readonly sudo?: boolean;
+    }>;
+  };
 };
+
+/**
+ * Runs an array of host-side hook commands sequentially.
+ * Each command runs on the host with the given cwd.
+ * Fails fast on non-zero exit.
+ */
+export const runHostHooks = (
+  hooks: ReadonlyArray<{ readonly command: string }>,
+  cwd: string,
+  signal?: AbortSignal,
+): Effect.Effect<void, ExecError | HookTimeoutError> =>
+  Effect.gen(function* () {
+    for (const hook of hooks) {
+      yield* Effect.tryPromise({
+        try: () => execAsync(hook.command, { cwd, signal }),
+        catch: (err) =>
+          new ExecError({
+            command: hook.command,
+            message: `Host hook failed: ${hook.command}\n${err instanceof Error ? err.message : String(err)}`,
+          }),
+      }).pipe(
+        withTimeout(
+          HOOK_TIMEOUT_MS,
+          () =>
+            new HookTimeoutError({
+              message: `Host hook '${hook.command}' timed out after ${HOOK_TIMEOUT_MS}ms`,
+              timeoutMs: HOOK_TIMEOUT_MS,
+              command: hook.command,
+            }),
+        ),
+      );
+    }
+  });
 
 export interface SandboxLifecycleOptions {
   readonly hostRepoDir: string;
@@ -77,6 +120,9 @@ export interface SandboxLifecycleOptions {
    *  For isolated providers, this syncs changes from the sandbox to the host worktree.
    *  For bind-mount providers, this is a no-op (filesystem is already shared). */
   readonly applyToHost?: () => Effect.Effect<void, SyncError>;
+  /** AbortSignal passed through to lifecycle hooks so they can cooperatively cancel.
+   *  When omitted, hooks receive a never-aborted signal. */
+  readonly signal?: AbortSignal;
 }
 
 export interface SandboxContext {
@@ -103,6 +149,10 @@ export const withSandboxLifecycle = <A>(
     const { hostRepoDir, sandboxRepoDir, hooks, branch, hostWorktreePath } =
       options;
 
+    // Resolve signal: use caller's signal or a never-aborted one so hooks
+    // can unconditionally reference it without null-checking.
+    const signal = options.signal ?? new AbortController().signal;
+
     // Without an explicit branch, record host's current branch for cherry-pick
     const hostCurrentBranch: string | null = !branch
       ? yield* Effect.promise(async () => {
@@ -126,6 +176,10 @@ export const withSandboxLifecycle = <A>(
       ]);
       return [nameResult, emailResult] as const;
     });
+
+    // For host-side operations, use hostWorktreePath (the real path on the host)
+    // instead of sandboxRepoDir (which may be a sandbox path like /home/agent/workspace).
+    const hostSideWorktreePath = hostWorktreePath ?? sandboxRepoDir;
 
     // Setup: onSandboxReady hooks
     let resolvedBranch = "";
@@ -161,39 +215,108 @@ export const withSandboxLifecycle = <A>(
           { cwd: sandboxRepoDir },
         )).stdout.trim();
 
-        if (hooks?.onSandboxReady?.length) {
-          for (const hook of hooks.onSandboxReady) {
+        // Run sandbox.onSandboxReady and host.onSandboxReady in parallel
+        const sandboxHooks = hooks?.sandbox?.onSandboxReady;
+        const hostOnSandboxReady = hooks?.host?.onSandboxReady;
+
+        if (sandboxHooks?.length) {
+          for (const hook of sandboxHooks) {
             message(hook.command);
           }
-          yield* Effect.all(
-            hooks.onSandboxReady.map((hook) =>
-              execOk(sandbox, hook.command, {
-                cwd: sandboxRepoDir,
-                sudo: hook.sudo,
-              }).pipe(
-                withTimeout(
-                  HOOK_TIMEOUT_MS,
-                  () =>
-                    new HookTimeoutError({
-                      message: `Hook '${hook.command}' timed out after ${HOOK_TIMEOUT_MS}ms`,
-                      timeoutMs: HOOK_TIMEOUT_MS,
-                      command: hook.command,
-                    }),
-                ),
+        }
+        if (hostOnSandboxReady?.length) {
+          for (const hook of hostOnSandboxReady) {
+            message(`[host] ${hook.command}`);
+          }
+        }
+
+        // Set up abort racing for sandbox hooks (sandbox.exec doesn't
+        // natively support AbortSignal, so we race via Deferred).
+        const abortDeferred = yield* Deferred.make<never, ExecError>();
+        let abortCleanup: (() => void) | null = null;
+        if (signal.aborted) {
+          yield* Deferred.fail(
+            abortDeferred,
+            new ExecError({
+              command: "abort",
+              message: `Aborted: ${signal.reason}`,
+            }),
+          );
+        } else {
+          const onAbort = () => {
+            Effect.runPromise(
+              Deferred.fail(
+                abortDeferred,
+                new ExecError({
+                  command: "abort",
+                  message: `Aborted: ${signal.reason}`,
+                }),
+              ),
+            ).catch(() => {});
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          abortCleanup = () => signal.removeEventListener("abort", onAbort);
+        }
+
+        const sandboxHookEffects = (sandboxHooks ?? []).map((hook) =>
+          Effect.raceFirst(
+            execOk(sandbox, hook.command, {
+              cwd: sandboxRepoDir,
+              sudo: hook.sudo,
+            }).pipe(
+              withTimeout(
+                HOOK_TIMEOUT_MS,
+                () =>
+                  new HookTimeoutError({
+                    message: `Hook '${hook.command}' timed out after ${HOOK_TIMEOUT_MS}ms`,
+                    timeoutMs: HOOK_TIMEOUT_MS,
+                    command: hook.command,
+                  }),
               ),
             ),
-            { concurrency: "unbounded" },
-          );
-        }
+            Deferred.await(abortDeferred) as Effect.Effect<
+              never,
+              ExecError,
+              never
+            >,
+          ),
+        );
+
+        const hostHookEffects = (hostOnSandboxReady ?? []).map((hook) =>
+          Effect.tryPromise({
+            try: () =>
+              execAsync(hook.command, {
+                cwd: hostSideWorktreePath,
+                signal,
+              }),
+            catch: (err) =>
+              new ExecError({
+                command: hook.command,
+                message: `Host hook failed: ${hook.command}\n${err instanceof Error ? err.message : String(err)}`,
+              }),
+          }).pipe(
+            withTimeout(
+              HOOK_TIMEOUT_MS,
+              () =>
+                new HookTimeoutError({
+                  message: `Host hook '${hook.command}' timed out after ${HOOK_TIMEOUT_MS}ms`,
+                  timeoutMs: HOOK_TIMEOUT_MS,
+                  command: hook.command,
+                }),
+            ),
+          ),
+        );
+
+        const allOnSandboxReady = [...sandboxHookEffects, ...hostHookEffects];
+        yield* (
+          allOnSandboxReady.length > 0
+            ? Effect.all(allOnSandboxReady, { concurrency: "unbounded" })
+            : Effect.void
+        ).pipe(Effect.ensuring(Effect.sync(() => abortCleanup?.())));
       }),
     );
 
     const targetBranch = branch ?? resolvedBranch;
-
-    // For host-side git operations in worktree mode, use hostWorktreePath
-    // (the real path on the host) instead of sandboxRepoDir (which may be a sandbox path
-    // like /home/agent/workspace that doesn't exist on the host).
-    const hostSideWorktreePath = hostWorktreePath ?? sandboxRepoDir;
 
     // Record base HEAD from the host worktree (not the sandbox).
     // For bind-mount providers, these are the same. For isolated providers,

@@ -1,5 +1,11 @@
 export { run } from "./run.js";
-export type { RunOptions, RunResult, LoggingOption } from "./run.js";
+export type {
+  RunOptions,
+  RunResult,
+  LoggingOption,
+  IterationResult,
+  IterationUsage,
+} from "./run.js";
 export { interactive } from "./interactive.js";
 export type { InteractiveOptions, InteractiveResult } from "./interactive.js";
 export { createSandbox } from "./createSandbox.js";
@@ -23,11 +29,25 @@ export type {
   WorktreeCreateSandboxOptions,
 } from "./createWorktree.js";
 export type { PromptArgs } from "./PromptArgumentSubstitution.js";
+export {
+  hostSessionStore,
+  sandboxSessionStore,
+  transferSession,
+} from "./SessionStore.js";
+export type { SessionStore } from "./SessionStore.js";
+export {
+  SessionPaths,
+  sessionPathsLayer,
+  defaultSessionPathsLayer,
+} from "./SessionPaths.js";
+export type { SandboxHooks } from "./SandboxLifecycle.js";
 export type { MountConfig } from "./MountConfig.js";
+export { CwdError } from "./resolveCwd.js";
 export { claudeCode, codex, opencode, pi } from "./AgentProvider.js";
 export type {
   AgentProvider,
   AgentCommandOptions,
+  PrintCommand,
   ClaudeCodeOptions,
   CodexOptions,
   OpenCodeOptions,

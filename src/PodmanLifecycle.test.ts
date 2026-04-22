@@ -7,7 +7,10 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { buildImage, removeImage } from "./PodmanLifecycle.js";
+import {
+  buildImage,
+  removeImage,
+} from "./PodmanLifecycle.js";
 
 const mockExecFile = vi.mocked(execFile);
 

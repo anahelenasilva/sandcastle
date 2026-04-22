@@ -107,15 +107,17 @@ const listWorktrees = (
  * - If `branch` is specified, checks out that branch.
  * - If not, creates a temporary `sandcastle/<timestamp>` branch.
  *
- * Fails with a clear error if the branch is already checked out in another worktree.
+ * When `branch` collides with an existing managed worktree:
+ * - Clean → reuses the existing worktree.
+ * - Dirty (uncommitted changes) → throws with actionable suggestions.
+ *
+ * Collisions with the main working tree or external worktrees always throw.
  */
 export const create = (
   repoDir: string,
   opts?: {
     branch?: string;
     name?: string;
-    /** When false, reuse an existing worktree instead of failing on collision. Default: true. */
-    throwOnDuplicateWorktree?: boolean;
   },
 ): Effect.Effect<
   WorktreeInfo,
@@ -154,9 +156,22 @@ export const create = (
       const existing = yield* listWorktrees(repoDir);
       const collision = existing.find((wt) => wt.branch === branch);
       if (collision) {
-        if (opts.throwOnDuplicateWorktree === false) {
+        // Only reuse worktrees managed by sandcastle (under .sandcastle/worktrees/)
+        const isManagedWorktree = collision.path.startsWith(worktreesDir);
+        if (isManagedWorktree) {
+          const dirty = yield* hasUncommittedChanges(collision.path);
+          if (dirty) {
+            console.warn(
+              `Reusing worktree at ${collision.path} (branch '${branch}') — worktree has uncommitted changes`,
+            );
+          } else {
+            console.log(
+              `Reusing existing worktree at ${collision.path} (branch '${branch}')`,
+            );
+          }
           return { path: collision.path, branch };
         }
+        // Branch is checked out in the main working tree or external worktree
         yield* Effect.fail(
           new WorktreeError({
             message:

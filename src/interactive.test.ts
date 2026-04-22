@@ -129,6 +129,8 @@ describe("interactive()", () => {
             return { stdout: result, stderr: "", exitCode: 0 };
           },
           interactiveExec: fakeInteractiveExec,
+          copyFileIn: async () => {},
+          copyFileOut: async () => {},
           close: async () => {},
         };
         return handle;
@@ -222,6 +224,8 @@ describe("interactive()", () => {
           return { stdout: result, stderr: "", exitCode: 0 };
         },
         // No interactiveExec
+        copyFileIn: async () => {},
+        copyFileOut: async () => {},
         close: async () => {},
       }),
     });
@@ -565,7 +569,9 @@ describe("interactive()", () => {
       sandbox: provider,
       prompt: "test",
       hooks: {
-        onSandboxReady: [{ command: "touch hook-ran.txt" }],
+        sandbox: {
+          onSandboxReady: [{ command: "touch hook-ran.txt" }],
+        },
       },
     });
 
@@ -586,6 +592,151 @@ describe("interactive()", () => {
         copyToWorktree: ["node_modules"],
       }),
     ).rejects.toThrow("copyToWorktree is not supported with head");
+  });
+
+  // --- AbortSignal tests ---
+
+  it("rejects immediately with pre-aborted signal without doing setup", async () => {
+    const ac = new AbortController();
+    ac.abort("cancelled before start");
+
+    const provider = makeTestProvider(async () => {
+      throw new Error("interactiveExec should not be called");
+    });
+
+    await expect(
+      interactive({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: provider,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow("cancelled before start");
+  });
+
+  it("surfaces signal.reason verbatim (no wrapping)", async () => {
+    const reason = new DOMException("user cancelled", "AbortError");
+    const ac = new AbortController();
+    ac.abort(reason);
+
+    const provider = makeTestProvider(async () => {
+      throw new Error("interactiveExec should not be called");
+    });
+
+    try {
+      await interactive({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: provider,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        signal: ac.signal,
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(reason);
+    }
+  });
+
+  it("aborts an active interactive session when signal fires", async () => {
+    const ac = new AbortController();
+
+    const provider = makeTestProvider(async (_args, _opts) => {
+      // Simulate a long-running interactive session
+      return new Promise<{ exitCode: number }>((resolve) => {
+        // Abort mid-session
+        setTimeout(() => ac.abort("mid-session abort"), 50);
+        // This would normally run for a long time
+        setTimeout(() => resolve({ exitCode: 0 }), 10000);
+      });
+    });
+
+    await expect(
+      interactive({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: provider,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow("mid-session abort");
+  });
+
+  it("allows signal to be omitted", () => {
+    const opts: InteractiveOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      prompt: "test",
+    };
+    expect(opts.signal).toBeUndefined();
+  });
+
+  it("allows signal to be specified on InteractiveOptions", () => {
+    const ac = new AbortController();
+    const opts: InteractiveOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      prompt: "test",
+      signal: ac.signal,
+    };
+    expect(opts.signal).toBe(ac.signal);
+  });
+
+  // --- cwd option tests ---
+
+  it("uses cwd as host repo directory for worktree placement", async () => {
+    // Create a second git repo in a separate temp dir
+    const otherRepo = mkdtempSync(join(tmpdir(), "sandcastle-cwd-test-"));
+    execSync("git init", { cwd: otherRepo, stdio: "ignore" });
+    execSync('git config user.email "test@test.com"', {
+      cwd: otherRepo,
+      stdio: "ignore",
+    });
+    execSync('git config user.name "Test"', {
+      cwd: otherRepo,
+      stdio: "ignore",
+    });
+    writeFileSync(join(otherRepo, "README.md"), "# Other Repo\n");
+    execSync("git add .", { cwd: otherRepo, stdio: "ignore" });
+    execSync('git commit -m "initial"', { cwd: otherRepo, stdio: "ignore" });
+
+    let worktreeCwd: string | undefined;
+
+    const provider = makeTestProvider(async (_args, opts) => {
+      worktreeCwd = opts.cwd;
+      return { exitCode: 0 };
+    });
+
+    const result = await interactive({
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: provider,
+      prompt: "test",
+      cwd: otherRepo,
+    });
+
+    expect(result.exitCode).toBe(0);
+    // The worktree should be under the other repo's .sandcastle/worktrees/ dir
+    expect(worktreeCwd).toBeDefined();
+    expect(worktreeCwd!.startsWith(otherRepo)).toBe(true);
+  });
+
+  it("without cwd behaves identically to process.cwd()", async () => {
+    let worktreeCwd: string | undefined;
+
+    const provider = makeTestProvider(async (_args, opts) => {
+      worktreeCwd = opts.cwd;
+      return { exitCode: 0 };
+    });
+
+    const result = await interactive({
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: provider,
+      prompt: "test",
+      // no cwd option
+    });
+
+    expect(result.exitCode).toBe(0);
+    // The worktree should be under process.cwd() (which is hostDir)
+    expect(worktreeCwd).toBeDefined();
+    expect(worktreeCwd!.startsWith(hostDir)).toBe(true);
   });
 
   it("copies files to worktree with copyToWorktree", async () => {

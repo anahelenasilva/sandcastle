@@ -23,6 +23,8 @@ const testSandbox = createBindMountSandboxProvider({
   create: async () => ({
     worktreePath: "/home/agent/workspace",
     exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    copyFileIn: async () => {},
+    copyFileOut: async () => {},
     close: async () => {},
   }),
 });
@@ -101,6 +103,30 @@ describe("printFileDisplayStartup", () => {
     // Bold ANSI escape code
     expect(allOutput).toContain("\u001b[1m");
   });
+
+  it("prints a relative log path when hostRepoDir equals process.cwd()", () => {
+    const logPath = join(process.cwd(), ".sandcastle", "logs", "main.log");
+    printFileDisplayStartup({
+      logPath,
+      hostRepoDir: process.cwd(),
+    });
+    const allOutput = consoleSpy.mock.calls.flat().join(" ");
+    expect(allOutput).toContain("tail -f .sandcastle/logs/main.log");
+    expect(allOutput).not.toContain(process.cwd());
+  });
+
+  it("prints an absolute log path when hostRepoDir differs from process.cwd()", () => {
+    const hostRepoDir = "/some/other/repo";
+    const logPath = join(hostRepoDir, ".sandcastle", "logs", "main.log");
+    printFileDisplayStartup({
+      logPath,
+      hostRepoDir,
+    });
+    const allOutput = consoleSpy.mock.calls.flat().join(" ");
+    expect(allOutput).toContain(
+      "tail -f /some/other/repo/.sandcastle/logs/main.log",
+    );
+  });
 });
 
 describe("buildCompletionMessage", () => {
@@ -129,7 +155,7 @@ describe("buildCompletionMessage", () => {
 describe("RunResult", () => {
   it("includes logFilePath when logging to a file", () => {
     const result: RunResult = {
-      iterationsRun: 1,
+      iterations: [{ sessionId: undefined }],
       completionSignal: undefined,
       stdout: "",
       commits: [],
@@ -141,13 +167,65 @@ describe("RunResult", () => {
 
   it("allows logFilePath to be absent when logging to stdout", () => {
     const result: RunResult = {
-      iterationsRun: 1,
+      iterations: [{ sessionId: undefined }],
       completionSignal: undefined,
       stdout: "",
       commits: [],
       branch: "main",
     };
     expect(result.logFilePath).toBeUndefined();
+  });
+
+  it("carries sessionId in iterations for Claude Code runs", () => {
+    const result: RunResult = {
+      iterations: [{ sessionId: "abc-123" }, { sessionId: "def-456" }],
+      completionSignal: undefined,
+      stdout: "",
+      commits: [],
+      branch: "main",
+    };
+    expect(result.iterations.length).toBe(2);
+    expect(result.iterations[0]!.sessionId).toBe("abc-123");
+    expect(result.iterations[1]!.sessionId).toBe("def-456");
+  });
+
+  it("has undefined sessionId for non-Claude agent iterations", () => {
+    const result: RunResult = {
+      iterations: [{ sessionId: undefined }],
+      completionSignal: undefined,
+      stdout: "",
+      commits: [],
+      branch: "main",
+    };
+    expect(result.iterations[0]!.sessionId).toBeUndefined();
+  });
+
+  it("carries sessionFilePath when session capture is enabled", () => {
+    const result: RunResult = {
+      iterations: [
+        {
+          sessionId: "abc-123",
+          sessionFilePath:
+            "/home/user/.claude/projects/-home-user-repo/abc-123.jsonl",
+        },
+      ],
+      completionSignal: undefined,
+      stdout: "",
+      commits: [],
+      branch: "main",
+    };
+    expect(result.iterations[0]!.sessionFilePath).toContain("abc-123.jsonl");
+  });
+
+  it("has undefined sessionFilePath when capture is disabled", () => {
+    const result: RunResult = {
+      iterations: [{ sessionId: "abc-123", sessionFilePath: undefined }],
+      completionSignal: undefined,
+      stdout: "",
+      commits: [],
+      branch: "main",
+    };
+    expect(result.iterations[0]!.sessionFilePath).toBeUndefined();
   });
 });
 
@@ -219,6 +297,25 @@ describe("RunOptions", () => {
     expect(opts.worktree).toBeUndefined();
   });
 
+  it("allows cwd to be specified", () => {
+    const opts: RunOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "test",
+      cwd: "/some/repo",
+    };
+    expect(opts.cwd).toBe("/some/repo");
+  });
+
+  it("allows cwd to be omitted (defaults to process.cwd())", () => {
+    const opts: RunOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "test",
+    };
+    expect(opts.cwd).toBeUndefined();
+  });
+
   it("does not accept a top-level branch field", () => {
     const opts: RunOptions = {
       agent: claudeCode("claude-opus-4-6"),
@@ -237,6 +334,103 @@ describe("RunOptions", () => {
     };
     // @ts-expect-error imageName is no longer a valid field on RunOptions
     expect(opts.imageName).toBeUndefined();
+  });
+});
+
+describe("signal (AbortSignal)", () => {
+  it("allows signal to be specified on RunOptions", () => {
+    const ac = new AbortController();
+    const opts: RunOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "test",
+      signal: ac.signal,
+    };
+    expect(opts.signal).toBe(ac.signal);
+  });
+
+  it("allows signal to be omitted", () => {
+    const opts: RunOptions = {
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "test",
+    };
+    expect(opts.signal).toBeUndefined();
+  });
+
+  it("rejects immediately with pre-aborted signal without doing setup", async () => {
+    const ac = new AbortController();
+    ac.abort("cancelled before start");
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow("cancelled before start");
+  });
+
+  it("surfaces signal.reason verbatim (no wrapping)", async () => {
+    const reason = new DOMException("user cancelled", "AbortError");
+    const ac = new AbortController();
+    ac.abort(reason);
+    try {
+      await run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        signal: ac.signal,
+      });
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(reason);
+    }
+  });
+});
+
+describe("resumeSession validation", () => {
+  it("throws when resumeSession is set with maxIterations > 1", async () => {
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        resumeSession: "abc-123",
+        maxIterations: 2,
+      }),
+    ).rejects.toThrow(
+      "resumeSession cannot be combined with maxIterations > 1",
+    );
+  });
+
+  it("throws when resumeSession file does not exist on host", async () => {
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        resumeSession: "nonexistent-session-id",
+      }),
+    ).rejects.toThrow('resumeSession "nonexistent-session-id" not found');
+  });
+
+  it("allows resumeSession with maxIterations = 1 (default)", async () => {
+    // This should fail for a different reason (missing session file),
+    // not the maxIterations validation
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "test",
+        branchStrategy: { type: "head" },
+        resumeSession: "abc-123",
+      }),
+    ).rejects.toThrow('resumeSession "abc-123" not found');
   });
 });
 
@@ -418,6 +612,39 @@ describe("buildLogFilename", () => {
     expect(buildLogFilename("main", undefined, "my review agent")).toBe(
       "main-my-review-agent.log",
     );
+  });
+});
+
+describe("promptFile resolution with cwd", () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleSpy.mockRestore();
+  });
+
+  it("resolves relative promptFile from process.cwd(), not from cwd", async () => {
+    // ADR 0002 regression: promptFile must resolve against process.cwd()
+    // regardless of what cwd is set to. This locks in the decision so it
+    // is not accidentally reversed.
+    const cwdDir = mkdtempSync(join(tmpdir(), "sandcastle-cwd-"));
+
+    // Use a relative promptFile path that does not exist under either
+    // process.cwd() or the custom cwd. The error message must reference
+    // a resolution against process.cwd(), not cwdDir.
+    const relativePromptFile = "nonexistent-prompt-file.md";
+
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        promptFile: relativePromptFile,
+        branchStrategy: { type: "head" },
+        cwd: cwdDir,
+      }),
+    ).rejects.toThrow(relativePromptFile);
   });
 });
 

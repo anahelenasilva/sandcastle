@@ -1,7 +1,8 @@
 export type ParsedStreamEvent =
   | { type: "text"; text: string }
   | { type: "result"; result: string }
-  | { type: "tool_call"; name: string; args: string };
+  | { type: "tool_call"; name: string; args: string }
+  | { type: "session_id"; sessionId: string };
 
 const shellEscape = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
 
@@ -56,6 +57,13 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
     if (obj.type === "result" && typeof obj.result === "string") {
       return [{ type: "result", result: obj.result }];
     }
+    if (
+      obj.type === "system" &&
+      obj.subtype === "init" &&
+      typeof obj.session_id === "string"
+    ) {
+      return [{ type: "session_id", sessionId: obj.session_id }];
+    }
   } catch {
     // Not valid JSON — skip
   }
@@ -66,15 +74,37 @@ const parseStreamJsonLine = (line: string): ParsedStreamEvent[] => {
 export interface AgentCommandOptions {
   readonly prompt: string;
   readonly dangerouslySkipPermissions: boolean;
+  /** When set, the agent should resume the given session ID instead of starting fresh. */
+  readonly resumeSession?: string;
+}
+
+/** Return type of buildPrintCommand — command string plus optional stdin content.
+ *  When `stdin` is set, the sandbox pipes it to the child process's stdin
+ *  instead of inlining the prompt in argv, avoiding the Linux 128 KB per-arg limit. */
+export interface PrintCommand {
+  readonly command: string;
+  readonly stdin?: string;
+}
+
+/** Per-iteration token usage snapshot extracted from the agent session. */
+export interface IterationUsage {
+  readonly inputTokens: number;
+  readonly cacheCreationInputTokens: number;
+  readonly cacheReadInputTokens: number;
+  readonly outputTokens: number;
 }
 
 export interface AgentProvider {
   readonly name: string;
   /** Environment variables injected by this agent provider. Merged at launch time with env resolver and sandbox provider env. */
   readonly env: Record<string, string>;
-  buildPrintCommand(options: AgentCommandOptions): string;
+  /** When true, session capture is enabled for this provider. Default: true for Claude Code, false for others. */
+  readonly captureSessions: boolean;
+  buildPrintCommand(options: AgentCommandOptions): PrintCommand;
   buildInteractiveArgs?(options: AgentCommandOptions): string[];
   parseStreamLine(line: string): ParsedStreamEvent[];
+  /** Parse token usage from the captured session JSONL content. Only implemented by Claude Code. */
+  parseSessionUsage?(content: string): IterationUsage | undefined;
 }
 
 export const DEFAULT_MODEL = "claude-opus-4-6";
@@ -145,9 +175,13 @@ export interface PiOptions {
 export const pi = (model: string, options?: PiOptions): AgentProvider => ({
   name: "pi",
   env: options?.env ?? {},
+  captureSessions: false,
 
-  buildPrintCommand({ prompt }: AgentCommandOptions): string {
-    return `pi -p --mode json --no-session --model ${shellEscape(model)} ${shellEscape(prompt)}`;
+  buildPrintCommand({ prompt }: AgentCommandOptions): PrintCommand {
+    return {
+      command: `pi -p --mode json --no-session --model ${shellEscape(model)}`,
+      stdin: prompt,
+    };
   },
 
   buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
@@ -174,9 +208,9 @@ const parseCodexStreamLine = (line: string): ParsedStreamEvent[] => {
     if (
       obj.type === "item.completed" &&
       obj.item?.type === "agent_message" &&
-      typeof obj.item.content === "string"
+      typeof obj.item.text === "string"
     ) {
-      const text = obj.item.content;
+      const text = obj.item.text;
       return [
         { type: "text", text },
         { type: "result", result: text },
@@ -212,12 +246,16 @@ export const codex = (
 ): AgentProvider => ({
   name: "codex",
   env: options?.env ?? {},
+  captureSessions: false,
 
-  buildPrintCommand({ prompt }: AgentCommandOptions): string {
+  buildPrintCommand({ prompt }: AgentCommandOptions): PrintCommand {
     const effortFlag = options?.effort
       ? ` -c ${shellEscape(`model_reasoning_effort="${options.effort}"`)}`
       : "";
-    return `codex exec --json --dangerously-bypass-approvals-and-sandbox -m ${shellEscape(model)}${effortFlag} ${shellEscape(prompt)}`;
+    return {
+      command: `codex exec --json --dangerously-bypass-approvals-and-sandbox -m ${shellEscape(model)}${effortFlag}`,
+      stdin: prompt,
+    };
   },
 
   buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
@@ -247,9 +285,12 @@ export const opencode = (
 ): AgentProvider => ({
   name: "opencode",
   env: options?.env ?? {},
+  captureSessions: false,
 
-  buildPrintCommand({ prompt }: AgentCommandOptions): string {
-    return `opencode run --model ${shellEscape(model)} ${shellEscape(prompt)}`;
+  buildPrintCommand({ prompt }: AgentCommandOptions): PrintCommand {
+    return {
+      command: `opencode run --model ${shellEscape(model)} ${shellEscape(prompt)}`,
+    };
   },
 
   buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
@@ -271,6 +312,8 @@ export interface ClaudeCodeOptions {
   readonly effort?: "low" | "medium" | "high" | "max";
   /** Environment variables injected by this agent provider. */
   readonly env?: Record<string, string>;
+  /** When false, session capture is disabled. Default: true. */
+  readonly captureSessions?: boolean;
 }
 
 export const claudeCode = (
@@ -279,16 +322,24 @@ export const claudeCode = (
 ): AgentProvider => ({
   name: "claude-code",
   env: options?.env ?? {},
+  captureSessions: options?.captureSessions ?? true,
 
   buildPrintCommand({
     prompt,
     dangerouslySkipPermissions,
-  }: AgentCommandOptions): string {
+    resumeSession,
+  }: AgentCommandOptions): PrintCommand {
     const skipPerms = dangerouslySkipPermissions
       ? " --dangerously-skip-permissions"
       : "";
     const effortFlag = options?.effort ? ` --effort ${options.effort}` : "";
-    return `claude --print --verbose${skipPerms} --output-format stream-json --model ${shellEscape(model)}${effortFlag} -p ${shellEscape(prompt)}`;
+    const resumeFlag = resumeSession
+      ? ` --resume ${shellEscape(resumeSession)}`
+      : "";
+    return {
+      command: `claude --print --verbose${skipPerms} --output-format stream-json --model ${shellEscape(model)}${effortFlag}${resumeFlag} -p -`,
+      stdin: prompt,
+    };
   },
 
   buildInteractiveArgs({
@@ -305,5 +356,35 @@ export const claudeCode = (
 
   parseStreamLine(line: string): ParsedStreamEvent[] {
     return parseStreamJsonLine(line);
+  },
+
+  parseSessionUsage(content: string): IterationUsage | undefined {
+    const lines = content.split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!;
+      if (!line.startsWith("{")) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === "assistant" && obj.message?.usage) {
+          const u = obj.message.usage;
+          if (
+            typeof u.input_tokens === "number" &&
+            typeof u.cache_creation_input_tokens === "number" &&
+            typeof u.cache_read_input_tokens === "number" &&
+            typeof u.output_tokens === "number"
+          ) {
+            return {
+              inputTokens: u.input_tokens,
+              cacheCreationInputTokens: u.cache_creation_input_tokens,
+              cacheReadInputTokens: u.cache_read_input_tokens,
+              outputTokens: u.output_tokens,
+            };
+          }
+        }
+      } catch {
+        // Not valid JSON — skip
+      }
+    }
+    return undefined;
   },
 });

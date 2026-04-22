@@ -15,11 +15,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { Effect } from "effect";
-import {
-  startContainer,
-  removeContainer,
-  chownInContainer,
-} from "../DockerLifecycle.js";
+import { startContainer, removeContainer } from "../DockerLifecycle.js";
 import {
   createBindMountSandboxProvider,
   type SandboxProvider,
@@ -28,11 +24,8 @@ import {
   type ExecResult,
   type InteractiveExecOptions,
 } from "../SandboxProvider.js";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
 import type { MountConfig } from "../MountConfig.js";
-import { SANDBOX_REPO_DIR } from "../SandboxFactory.js";
+import { defaultImageName, resolveUserMounts } from "../mountUtils.js";
 
 export interface DockerOptions {
   /** Docker image name (default: derived from repo directory name). */
@@ -109,14 +102,6 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
             user: `${hostUid}:${hostGid}`,
             network: options?.network,
           },
-        ).pipe(
-          Effect.andThen(
-            chownInContainer(
-              containerName,
-              `${hostUid}:${hostGid}`,
-              "/home/agent",
-            ),
-          ),
         ),
       );
 
@@ -147,64 +132,60 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
             onLine?: (line: string) => void;
             cwd?: string;
             sudo?: boolean;
+            stdin?: string;
           },
         ): Promise<ExecResult> => {
           const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
           const args = ["exec"];
+          if (opts?.stdin !== undefined) args.push("-i");
           if (opts?.cwd) args.push("-w", opts.cwd);
           args.push(containerName, "sh", "-c", effectiveCommand);
 
-          if (opts?.onLine) {
-            const onLine = opts.onLine;
-            return new Promise((resolve, reject) => {
-              const proc = spawn("docker", args, {
-                stdio: ["ignore", "pipe", "pipe"],
-              });
+          return new Promise((resolve, reject) => {
+            const proc = spawn("docker", args, {
+              stdio: [
+                opts?.stdin !== undefined ? "pipe" : "ignore",
+                "pipe",
+                "pipe",
+              ],
+            });
 
-              const stdoutChunks: string[] = [];
-              const stderrChunks: string[] = [];
+            if (opts?.stdin !== undefined) {
+              proc.stdin!.write(opts.stdin);
+              proc.stdin!.end();
+            }
 
+            const stdoutChunks: string[] = [];
+            const stderrChunks: string[] = [];
+
+            if (opts?.onLine) {
+              const onLine = opts.onLine;
               const rl = createInterface({ input: proc.stdout! });
               rl.on("line", (line) => {
                 stdoutChunks.push(line);
                 onLine(line);
               });
-
-              proc.stderr!.on("data", (chunk: Buffer) => {
-                stderrChunks.push(chunk.toString());
+            } else {
+              proc.stdout!.on("data", (chunk: Buffer) => {
+                stdoutChunks.push(chunk.toString());
               });
+            }
 
-              proc.on("error", (error) => {
-                reject(new Error(`docker exec failed: ${error.message}`));
-              });
+            proc.stderr!.on("data", (chunk: Buffer) => {
+              stderrChunks.push(chunk.toString());
+            });
 
-              proc.on("close", (code) => {
-                resolve({
-                  stdout: stdoutChunks.join("\n"),
-                  stderr: stderrChunks.join(""),
-                  exitCode: code ?? 0,
-                });
+            proc.on("error", (error) => {
+              reject(new Error(`docker exec failed: ${error.message}`));
+            });
+
+            proc.on("close", (code) => {
+              resolve({
+                stdout: stdoutChunks.join(opts?.onLine ? "\n" : ""),
+                stderr: stderrChunks.join(""),
+                exitCode: code ?? 0,
               });
             });
-          }
-
-          return new Promise((resolve, reject) => {
-            execFile(
-              "docker",
-              args,
-              { maxBuffer: 10 * 1024 * 1024 },
-              (error, stdout, stderr) => {
-                if (error && error.code === undefined) {
-                  reject(new Error(`docker exec failed: ${error.message}`));
-                } else {
-                  resolve({
-                    stdout: stdout.toString(),
-                    stderr: stderr.toString(),
-                    exitCode: typeof error?.code === "number" ? error.code : 0,
-                  });
-                }
-              },
-            );
           });
         },
 
@@ -240,6 +221,36 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
           });
         },
 
+        copyFileIn: (hostPath: string, sandboxPath: string): Promise<void> =>
+          new Promise((resolve, reject) => {
+            execFile(
+              "docker",
+              ["cp", hostPath, `${containerName}:${sandboxPath}`],
+              (error) => {
+                if (error) {
+                  reject(new Error(`docker cp (in) failed: ${error.message}`));
+                } else {
+                  resolve();
+                }
+              },
+            );
+          }),
+
+        copyFileOut: (sandboxPath: string, hostPath: string): Promise<void> =>
+          new Promise((resolve, reject) => {
+            execFile(
+              "docker",
+              ["cp", `${containerName}:${sandboxPath}`, hostPath],
+              (error) => {
+                if (error) {
+                  reject(new Error(`docker cp (out) failed: ${error.message}`));
+                } else {
+                  resolve();
+                }
+              },
+            );
+          }),
+
         close: async (): Promise<void> => {
           process.removeListener("exit", onExit);
           process.removeListener("SIGINT", onSignal);
@@ -253,51 +264,5 @@ export const docker = (options?: DockerOptions): SandboxProvider => {
   });
 };
 
-/**
- * Derive the default Docker image name from the repo directory.
- * Returns `sandcastle:<dir-name>` where dir-name is the last path segment,
- * lowercased and sanitized for Docker image tag rules.
- */
-export const defaultImageName = (repoDir: string): string => {
-  const dirName = repoDir.replace(/\/+$/, "").split("/").pop() ?? "local";
-  const sanitized = dirName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-");
-  return `sandcastle:${sanitized}`;
-};
-
-const expandTilde = (p: string): string => {
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) return homedir() + p.slice(1);
-  return p;
-};
-
-const resolveHostPath = (hostPath: string): string => {
-  const expanded = expandTilde(hostPath);
-  return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded);
-};
-
-const resolveSandboxPath = (sandboxPath: string): string =>
-  isAbsolute(sandboxPath)
-    ? sandboxPath
-    : resolve(SANDBOX_REPO_DIR, sandboxPath);
-
-const resolveUserMounts = (
-  mounts: readonly MountConfig[],
-): Array<{ hostPath: string; sandboxPath: string; readonly?: boolean }> =>
-  mounts.map((m) => {
-    const resolvedHostPath = resolveHostPath(m.hostPath);
-
-    if (!existsSync(resolvedHostPath)) {
-      throw new Error(
-        `Mount hostPath does not exist: ${m.hostPath}` +
-          (m.hostPath !== resolvedHostPath
-            ? ` (resolved to ${resolvedHostPath})`
-            : ""),
-      );
-    }
-
-    return {
-      hostPath: resolvedHostPath,
-      sandboxPath: resolveSandboxPath(m.sandboxPath),
-      ...(m.readonly ? { readonly: true } : {}),
-    };
-  });
+// Re-export for backwards compatibility
+export { defaultImageName };

@@ -1,6 +1,8 @@
 import { NodeContext, NodeFileSystem } from "@effect/platform-node";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Effect, Layer } from "effect";
+import { hostSessionStore } from "./SessionStore.js";
 import type { AgentProvider } from "./AgentProvider.js";
 import { ClackDisplay, Display, FileDisplay } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
@@ -11,7 +13,11 @@ import {
   resolveGitMounts,
   SANDBOX_REPO_DIR,
 } from "./SandboxFactory.js";
-import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
+import {
+  withSandboxLifecycle,
+  runHostHooks,
+  type SandboxHooks,
+} from "./SandboxLifecycle.js";
 import type {
   AnySandboxProvider,
   SandboxProvider,
@@ -26,13 +32,15 @@ import { createSandboxFromWorktree } from "./createSandbox.js";
 import type { InteractiveResult } from "./interactive.js";
 import { buildLogFilename, printFileDisplayStartup } from "./run.js";
 import type { LoggingOption } from "./run.js";
-import { orchestrate } from "./Orchestrator.js";
+import { orchestrate, type IterationResult } from "./Orchestrator.js";
+import { defaultSessionPathsLayer } from "./SessionPaths.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
 import * as WorktreeManager from "./WorktreeManager.js";
 import { copyToWorktree } from "./CopyToWorktree.js";
+import { resolveCwd } from "./resolveCwd.js";
 import {
   type PromptArgs,
   substitutePromptArgs,
@@ -40,6 +48,7 @@ import {
   BUILT_IN_PROMPT_ARG_KEYS,
 } from "./PromptArgumentSubstitution.js";
 import { noSandbox } from "./sandboxes/no-sandbox.js";
+import { raceAbortSignal } from "./raceAbortSignal.js";
 
 /** Branch strategies valid for createWorktree — head is excluded. */
 export type WorktreeBranchStrategy =
@@ -49,12 +58,21 @@ export type WorktreeBranchStrategy =
 export interface CreateWorktreeOptions {
   /** Branch strategy — only 'branch' and 'merge-to-head' are allowed. */
   readonly branchStrategy: WorktreeBranchStrategy;
+  /**
+   * Host repo directory. Replaces `process.cwd()` as the anchor for
+   * `.sandcastle/worktrees/`, `.sandcastle/.env`, and git operations.
+   *
+   * - Relative paths are resolved against `process.cwd()`.
+   * - Absolute paths are used as-is.
+   * - Defaults to `process.cwd()` when omitted.
+   */
+  readonly cwd?: string;
   /** Paths relative to the host repo root to copy into the worktree at creation time. */
   readonly copyToWorktree?: string[];
-  /** @internal Test-only overrides. */
-  readonly _test?: {
-    readonly hostRepoDir?: string;
-  };
+  /** Lifecycle hooks grouped by execution location (host or sandbox).
+   *  Only `host.onWorktreeReady` is executed here — other hooks are passed through
+   *  to `run()`, `interactive()`, or `createSandbox()`. */
+  readonly hooks?: SandboxHooks;
 }
 
 export interface WorktreeInteractiveOptions {
@@ -74,6 +92,17 @@ export interface WorktreeInteractiveOptions {
   readonly promptArgs?: PromptArgs;
   /** Environment variables to inject into the sandbox. */
   readonly env?: Record<string, string>;
+  /**
+   * An `AbortSignal` that cancels the interactive session when aborted.
+   *
+   * - If `signal.aborted` is already `true` at entry, rejects immediately.
+   * - Aborting during an active session kills the agent subprocess.
+   * - The worktree is preserved on disk after abort.
+   * - The `Worktree` handle remains usable for subsequent operations.
+   * - The rejected promise surfaces `signal.reason` via
+   *   `signal.throwIfAborted()` — no Sandcastle-specific wrapping.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface WorktreeRunOptions {
@@ -101,11 +130,23 @@ export interface WorktreeRunOptions {
   readonly hooks?: SandboxHooks;
   /** Environment variables to inject into the sandbox. */
   readonly env?: Record<string, string>;
+  /** Resume a prior Claude Code session by ID. The session JSONL must exist on the host. Incompatible with maxIterations > 1. */
+  readonly resumeSession?: string;
+  /**
+   * An `AbortSignal` that cancels the run when aborted.
+   *
+   * - If `signal.aborted` is already `true` at entry, rejects immediately
+   *   without doing any setup work.
+   * - Aborting mid-iteration kills the in-flight agent subprocess.
+   * - The worktree is preserved on disk after abort.
+   * - The `Worktree` handle remains usable for subsequent operations.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface WorktreeRunResult {
-  /** Number of iterations the agent completed during this run. */
-  readonly iterationsRun: number;
+  /** Per-iteration results (use `iterations.length` for the count). */
+  readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
   readonly completionSignal?: string;
   /** Combined stdout output from all agent iterations. */
@@ -121,13 +162,8 @@ export interface WorktreeRunResult {
 export interface WorktreeCreateSandboxOptions {
   /** Sandbox provider (e.g. docker({ imageName: "sandcastle:myrepo" })). */
   readonly sandbox: SandboxProvider;
-  /** One-time setup hooks to run when the sandbox is first created. */
-  readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{
-      command: string;
-      sudo?: boolean;
-    }>;
-  };
+  /** Lifecycle hooks grouped by execution location (host or sandbox). */
+  readonly hooks?: SandboxHooks;
   /** Paths relative to the host repo root to copy into the worktree at creation time. */
   readonly copyToWorktree?: string[];
   /** @internal Test-only overrides to bypass the sandbox provider. */
@@ -165,14 +201,13 @@ export interface Worktree {
 export const createWorktree = async (
   options: CreateWorktreeOptions,
 ): Promise<Worktree> => {
-  const hostRepoDir = options._test?.hostRepoDir ?? process.cwd();
-
   const branch =
     options.branchStrategy.type === "branch"
       ? options.branchStrategy.branch
       : undefined;
 
-  const worktreeInfo = await Effect.gen(function* () {
+  const { hostRepoDir, worktreeInfo } = await Effect.gen(function* () {
+    const hostRepoDir = yield* resolveCwd(options.cwd);
     yield* WorktreeManager.pruneStale(hostRepoDir).pipe(
       Effect.catchAll(() => Effect.void),
     );
@@ -180,7 +215,11 @@ export const createWorktree = async (
     if (options.copyToWorktree && options.copyToWorktree.length > 0) {
       yield* copyToWorktree(options.copyToWorktree, hostRepoDir, info.path);
     }
-    return info;
+    // Run host.onWorktreeReady hooks after copyToWorktree, before sandbox creation
+    if (options.hooks?.host?.onWorktreeReady?.length) {
+      yield* runHostHooks(options.hooks.host.onWorktreeReady, info.path);
+    }
+    return { hostRepoDir, worktreeInfo: info };
   }).pipe(Effect.provide(NodeContext.layer), Effect.runPromise);
 
   let closed = false;
@@ -209,6 +248,9 @@ export const createWorktree = async (
   const worktreeInteractive = async (
     opts: WorktreeInteractiveOptions,
   ): Promise<InteractiveResult> => {
+    // If signal is already aborted, reject immediately without any setup
+    opts.signal?.throwIfAborted();
+
     const { prompt, promptFile, hooks, agent: provider } = opts;
     const resolvedSandbox = opts.sandbox ?? noSandbox();
 
@@ -342,13 +384,17 @@ export const createWorktree = async (
                 prompt: fullPrompt,
                 dangerouslySkipPermissions: resolvedSandbox.tag !== "none",
               });
-              const result = yield* Effect.promise(() =>
-                interactiveExecFn(interactiveArgs, {
-                  stdin: process.stdin,
-                  stdout: process.stdout,
-                  stderr: process.stderr,
-                  cwd: worktreePath,
-                }),
+
+              const result = yield* raceAbortSignal(
+                Effect.promise(() =>
+                  interactiveExecFn(interactiveArgs, {
+                    stdin: process.stdin,
+                    stdout: process.stdout,
+                    stderr: process.stderr,
+                    cwd: worktreePath,
+                  }),
+                ),
+                opts.signal,
               );
 
               return result.exitCode;
@@ -380,21 +426,47 @@ export const createWorktree = async (
       );
     });
 
-    return Effect.runPromise(
-      inner.pipe(
-        Effect.provide(ClackDisplay.layer),
-        Effect.provide(NodeContext.layer),
-        Effect.provide(NodeFileSystem.layer),
-      ),
-    );
+    try {
+      return await Effect.runPromise(
+        inner.pipe(
+          Effect.provide(ClackDisplay.layer),
+          Effect.provide(NodeContext.layer),
+          Effect.provide(NodeFileSystem.layer),
+        ),
+      );
+    } catch (error: unknown) {
+      // If the signal was aborted, surface its reason verbatim (no wrapping)
+      opts.signal?.throwIfAborted();
+      throw error;
+    }
   };
 
   const worktreeRun = async (
     opts: WorktreeRunOptions,
   ): Promise<WorktreeRunResult> => {
+    // If signal is already aborted, reject immediately without any setup
+    opts.signal?.throwIfAborted();
+
     const { prompt, promptFile, hooks, agent: provider } = opts;
     const sandboxProvider = opts.sandbox;
     const maxIterations = opts.maxIterations ?? 1;
+
+    if (opts.resumeSession && maxIterations > 1) {
+      throw new Error(
+        "resumeSession cannot be combined with maxIterations > 1. " +
+          "Resume applies to iteration 1 only; multi-iteration resume semantics are not supported.",
+      );
+    }
+
+    if (opts.resumeSession) {
+      const hStore = hostSessionStore(hostRepoDir);
+      const sessionPath = hStore.sessionFilePath(opts.resumeSession);
+      if (!existsSync(sessionPath)) {
+        throw new Error(
+          `resumeSession "${opts.resumeSession}" not found: expected session file at ${sessionPath}`,
+        );
+      }
+    }
 
     const inner = Effect.gen(function* () {
       // 1. Resolve prompt
@@ -499,7 +571,11 @@ export const createWorktree = async (
           ) as any,
       });
 
-      const runLayer = Layer.merge(reuseFactoryLayer, runDisplayLayer);
+      const runLayer = Layer.mergeAll(
+        reuseFactoryLayer,
+        runDisplayLayer,
+        defaultSessionPathsLayer,
+      );
 
       // 7. Run orchestration
       const result = yield* Effect.gen(function* () {
@@ -516,6 +592,8 @@ export const createWorktree = async (
           completionSignal: opts.completionSignal,
           idleTimeoutSeconds: opts.idleTimeoutSeconds,
           name: opts.name,
+          resumeSession: opts.resumeSession,
+          signal: opts.signal,
         });
       }).pipe(
         Effect.provide(runLayer),
@@ -524,7 +602,7 @@ export const createWorktree = async (
       );
 
       return {
-        iterationsRun: result.iterationsRun,
+        iterations: result.iterations,
         completionSignal: result.completionSignal,
         stdout: result.stdout,
         commits: result.commits,
@@ -534,13 +612,19 @@ export const createWorktree = async (
       } satisfies WorktreeRunResult;
     });
 
-    return Effect.runPromise(
-      inner.pipe(
-        Effect.provide(ClackDisplay.layer),
-        Effect.provide(NodeContext.layer),
-        Effect.provide(NodeFileSystem.layer),
-      ),
-    );
+    try {
+      return await Effect.runPromise(
+        inner.pipe(
+          Effect.provide(ClackDisplay.layer),
+          Effect.provide(NodeContext.layer),
+          Effect.provide(NodeFileSystem.layer),
+        ),
+      );
+    } catch (error: unknown) {
+      // If the signal was aborted, surface its reason verbatim (no wrapping)
+      opts.signal?.throwIfAborted();
+      throw error;
+    }
   };
 
   const worktreeCreateSandbox = async (

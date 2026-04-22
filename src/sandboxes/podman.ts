@@ -22,11 +22,8 @@ import {
   type ExecResult,
   type InteractiveExecOptions,
 } from "../SandboxProvider.js";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
 import type { MountConfig } from "../MountConfig.js";
-import { SANDBOX_REPO_DIR } from "../SandboxFactory.js";
+import { defaultImageName, resolveUserMounts } from "../mountUtils.js";
 
 export interface PodmanOptions {
   /** Podman image name (default: derived from repo directory name). */
@@ -42,11 +39,26 @@ export interface PodmanOptions {
   /**
    * User namespace mode for rootless Podman.
    *
-   * - `"keep-id"` (default) — maps host UID 1:1 into the container,
-   *   so bind-mounted files have correct ownership. Required for rootless Podman.
+   * - `"keep-id"` (default) — maps host UID to `containerUid` inside the
+   *   container via `--userns=keep-id:uid=N,gid=N`, so both bind-mounted
+   *   files and image-built files have correct ownership without chown.
    * - `false` — disable; use for rootful Podman setups.
    */
   readonly userns?: "keep-id" | false;
+  /**
+   * The UID of the `agent` user inside the container image (default: 1000).
+   *
+   * Must match the UID set in the Containerfile. Used with `--userns=keep-id`
+   * to map the host user to this UID inside the container.
+   */
+  readonly containerUid?: number;
+  /**
+   * The GID of the `agent` user inside the container image (default: 1000).
+   *
+   * Must match the GID set in the Containerfile. Used with `--userns=keep-id`
+   * to map the host group to this GID inside the container.
+   */
+  readonly containerGid?: number;
   /**
    * Additional host directories to bind-mount into the sandbox.
    *
@@ -79,6 +91,8 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
   const configuredImageName = options?.imageName;
   const selinuxLabel = options?.selinuxLabel ?? "z";
   const userns = options?.userns ?? "keep-id";
+  const containerUid = options?.containerUid ?? 1000;
+  const containerGid = options?.containerGid ?? 1000;
   const userMounts = options?.mounts ? resolveUserMounts(options.mounts) : [];
 
   return createBindMountSandboxProvider({
@@ -112,16 +126,16 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
       // Pre-flight: verify image exists locally
       await checkImageExists(imageName);
 
-      const hostUid = process.getuid?.() ?? 1000;
-      const hostGid = process.getgid?.() ?? 1000;
-
       const env = { ...createOptions.env, HOME: "/home/agent" };
       const envArgs = Object.entries(env).flatMap(([key, value]) => [
         "-e",
         `${key}=${value}`,
       ]);
       const volumeArgs = volumeMounts.flatMap((v) => ["-v", v]);
-      const usernsArgs = userns ? [`--userns=${userns}`] : [];
+      const usernsArgs = userns
+        ? [`--userns=keep-id:uid=${containerUid},gid=${containerGid}`]
+        : [];
+      const userArgs = ["--user", `${containerUid}:${containerGid}`];
       const networks = options?.network
         ? Array.isArray(options.network)
           ? options.network
@@ -138,8 +152,7 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
             "-d",
             "--name",
             containerName,
-            "--user",
-            `${hostUid}:${hostGid}`,
+            ...userArgs,
             ...usernsArgs,
             ...networkArgs,
             "-w",
@@ -189,64 +202,60 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
             onLine?: (line: string) => void;
             cwd?: string;
             sudo?: boolean;
+            stdin?: string;
           },
         ): Promise<ExecResult> => {
           const effectiveCommand = opts?.sudo ? `sudo ${command}` : command;
           const args = ["exec"];
+          if (opts?.stdin !== undefined) args.push("-i");
           if (opts?.cwd) args.push("-w", opts.cwd);
           args.push(containerName, "sh", "-c", effectiveCommand);
 
-          if (opts?.onLine) {
-            const onLine = opts.onLine;
-            return new Promise((resolve, reject) => {
-              const proc = spawn("podman", args, {
-                stdio: ["ignore", "pipe", "pipe"],
-              });
+          return new Promise((resolve, reject) => {
+            const proc = spawn("podman", args, {
+              stdio: [
+                opts?.stdin !== undefined ? "pipe" : "ignore",
+                "pipe",
+                "pipe",
+              ],
+            });
 
-              const stdoutChunks: string[] = [];
-              const stderrChunks: string[] = [];
+            if (opts?.stdin !== undefined) {
+              proc.stdin!.write(opts.stdin);
+              proc.stdin!.end();
+            }
 
+            const stdoutChunks: string[] = [];
+            const stderrChunks: string[] = [];
+
+            if (opts?.onLine) {
+              const onLine = opts.onLine;
               const rl = createInterface({ input: proc.stdout! });
               rl.on("line", (line) => {
                 stdoutChunks.push(line);
                 onLine(line);
               });
-
-              proc.stderr!.on("data", (chunk: Buffer) => {
-                stderrChunks.push(chunk.toString());
+            } else {
+              proc.stdout!.on("data", (chunk: Buffer) => {
+                stdoutChunks.push(chunk.toString());
               });
+            }
 
-              proc.on("error", (error) => {
-                reject(new Error(`podman exec failed: ${error.message}`));
-              });
+            proc.stderr!.on("data", (chunk: Buffer) => {
+              stderrChunks.push(chunk.toString());
+            });
 
-              proc.on("close", (code) => {
-                resolve({
-                  stdout: stdoutChunks.join("\n"),
-                  stderr: stderrChunks.join(""),
-                  exitCode: code ?? 0,
-                });
+            proc.on("error", (error) => {
+              reject(new Error(`podman exec failed: ${error.message}`));
+            });
+
+            proc.on("close", (code) => {
+              resolve({
+                stdout: stdoutChunks.join(opts?.onLine ? "\n" : ""),
+                stderr: stderrChunks.join(""),
+                exitCode: code ?? 0,
               });
             });
-          }
-
-          return new Promise((resolve, reject) => {
-            execFile(
-              "podman",
-              args,
-              { maxBuffer: 10 * 1024 * 1024 },
-              (error, stdout, stderr) => {
-                if (error && error.code === undefined) {
-                  reject(new Error(`podman exec failed: ${error.message}`));
-                } else {
-                  resolve({
-                    stdout: stdout.toString(),
-                    stderr: stderr.toString(),
-                    exitCode: typeof error?.code === "number" ? error.code : 0,
-                  });
-                }
-              },
-            );
           });
         },
 
@@ -282,6 +291,36 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
           });
         },
 
+        copyFileIn: (hostPath: string, sandboxPath: string): Promise<void> =>
+          new Promise((resolve, reject) => {
+            execFile(
+              "podman",
+              ["cp", hostPath, `${containerName}:${sandboxPath}`],
+              (error) => {
+                if (error) {
+                  reject(new Error(`podman cp (in) failed: ${error.message}`));
+                } else {
+                  resolve();
+                }
+              },
+            );
+          }),
+
+        copyFileOut: (sandboxPath: string, hostPath: string): Promise<void> =>
+          new Promise((resolve, reject) => {
+            execFile(
+              "podman",
+              ["cp", `${containerName}:${sandboxPath}`, hostPath],
+              (error) => {
+                if (error) {
+                  reject(new Error(`podman cp (out) failed: ${error.message}`));
+                } else {
+                  resolve();
+                }
+              },
+            );
+          }),
+
         close: async (): Promise<void> => {
           process.removeListener("exit", onExit);
           process.removeListener("SIGINT", onSignal);
@@ -303,54 +342,8 @@ export const podman = (options?: PodmanOptions): SandboxProvider => {
   });
 };
 
-/**
- * Derive the default Podman image name from the repo directory.
- * Returns `sandcastle:<dir-name>` where dir-name is the last path segment,
- * lowercased and sanitized for image tag rules.
- */
-export const defaultImageName = (repoDir: string): string => {
-  const dirName = repoDir.replace(/\/+$/, "").split("/").pop() || "local";
-  const sanitized = dirName.toLowerCase().replace(/[^a-z0-9_.-]/g, "-");
-  return `sandcastle:${sanitized}`;
-};
-
-const expandTilde = (p: string): string => {
-  if (p === "~") return homedir();
-  if (p.startsWith("~/")) return homedir() + p.slice(1);
-  return p;
-};
-
-const resolveHostPath = (hostPath: string): string => {
-  const expanded = expandTilde(hostPath);
-  return isAbsolute(expanded) ? expanded : resolve(process.cwd(), expanded);
-};
-
-const resolveSandboxPath = (sandboxPath: string): string =>
-  isAbsolute(sandboxPath)
-    ? sandboxPath
-    : resolve(SANDBOX_REPO_DIR, sandboxPath);
-
-const resolveUserMounts = (
-  mounts: readonly MountConfig[],
-): Array<{ hostPath: string; sandboxPath: string; readonly?: boolean }> =>
-  mounts.map((m) => {
-    const resolvedHostPath = resolveHostPath(m.hostPath);
-
-    if (!existsSync(resolvedHostPath)) {
-      throw new Error(
-        `Mount hostPath does not exist: ${m.hostPath}` +
-          (m.hostPath !== resolvedHostPath
-            ? ` (resolved to ${resolvedHostPath})`
-            : ""),
-      );
-    }
-
-    return {
-      hostPath: resolvedHostPath,
-      sandboxPath: resolveSandboxPath(m.sandboxPath),
-      ...(m.readonly ? { readonly: true } : {}),
-    };
-  });
+// Re-export for backwards compatibility
+export { defaultImageName };
 
 const checkImageExists = (imageName: string): Promise<void> =>
   new Promise<void>((resolve, reject) => {

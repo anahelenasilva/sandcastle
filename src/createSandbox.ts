@@ -11,7 +11,8 @@ import {
 } from "./Display.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
-import { orchestrate } from "./Orchestrator.js";
+import { orchestrate, type IterationResult } from "./Orchestrator.js";
+import { defaultSessionPathsLayer } from "./SessionPaths.js";
 import {
   type PromptArgs,
   substitutePromptArgs,
@@ -22,7 +23,11 @@ import { resolvePrompt } from "./PromptResolver.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
 import type { LoggingOption } from "./run.js";
 import { buildLogFilename, printFileDisplayStartup } from "./run.js";
-import { withSandboxLifecycle } from "./SandboxLifecycle.js";
+import {
+  withSandboxLifecycle,
+  runHostHooks,
+  type SandboxHooks,
+} from "./SandboxLifecycle.js";
 import {
   Sandbox as SandboxTag,
   SandboxFactory,
@@ -38,26 +43,28 @@ import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
 import * as WorktreeManager from "./WorktreeManager.js";
 import { copyToWorktree } from "./CopyToWorktree.js";
+import { resolveCwd } from "./resolveCwd.js";
 
 export interface CreateSandboxOptions {
   /** Explicit branch for the worktree (required). */
   readonly branch: string;
   /** Sandbox provider (e.g. docker({ imageName: "sandcastle:myrepo" })). */
   readonly sandbox: SandboxProvider;
-  /** One-time setup hooks to run when the sandbox is first created. */
-  readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{
-      command: string;
-      sudo?: boolean;
-    }>;
-  };
+  /**
+   * Host repo directory. Replaces `process.cwd()` as the anchor for
+   * `.sandcastle/worktrees/`, `.sandcastle/.env`, and git operations.
+   *
+   * - Relative paths are resolved against `process.cwd()`.
+   * - Absolute paths are used as-is.
+   * - Defaults to `process.cwd()` when omitted.
+   */
+  readonly cwd?: string;
+  /** Lifecycle hooks grouped by execution location (host or sandbox). */
+  readonly hooks?: SandboxHooks;
   /** Paths relative to the host repo root to copy into the worktree at creation time. */
   readonly copyToWorktree?: string[];
-  /** When false, reuse an existing worktree instead of failing on collision. Default: true. */
-  readonly throwOnDuplicateWorktree?: boolean;
   /** @internal Test-only overrides to bypass the sandbox provider. */
   readonly _test?: {
-    readonly hostRepoDir?: string;
     readonly buildSandboxLayer?: (
       sandboxDir: string,
     ) => Layer.Layer<SandboxTag>;
@@ -83,11 +90,21 @@ export interface SandboxRunOptions {
   readonly name?: string;
   /** Logging mode. */
   readonly logging?: LoggingOption;
+  /**
+   * An `AbortSignal` that cancels the run when aborted.
+   *
+   * - Pre-aborted signal rejects immediately without setup.
+   * - Mid-iteration abort kills the in-flight agent subprocess.
+   * - The rejected promise surfaces `signal.reason` verbatim.
+   * - The `Sandbox` handle remains usable after abort — call `.run()` again
+   *   with a fresh signal, or `.close()` to tear down.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface SandboxRunResult {
-  /** Number of iterations the agent completed during this run. */
-  readonly iterationsRun: number;
+  /** Per-iteration results (use `iterations.length` for the count). */
+  readonly iterations: IterationResult[];
   /** The matched completion signal string, or undefined if none fired. */
   readonly completionSignal?: string;
   /** Combined stdout output from all agent iterations. */
@@ -109,6 +126,14 @@ export interface SandboxInteractiveOptions {
   readonly promptArgs?: PromptArgs;
   /** Display name for this interactive session. */
   readonly name?: string;
+  /**
+   * An `AbortSignal` that cancels the interactive session when aborted.
+   *
+   * - Pre-aborted signal rejects immediately without setup.
+   * - The rejected promise surfaces `signal.reason` verbatim.
+   * - The `Sandbox` handle remains usable after abort.
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface SandboxInteractiveResult {
@@ -179,6 +204,9 @@ const buildSandboxHandle = (
     worktreePath: worktreePath,
 
     run: async (runOptions: SandboxRunOptions): Promise<SandboxRunResult> => {
+      // If signal is already aborted, reject immediately without any setup
+      runOptions.signal?.throwIfAborted();
+
       const {
         agent: provider,
         prompt,
@@ -257,28 +285,40 @@ const buildSandboxHandle = (
           ) as any,
       });
 
-      const runLayer = Layer.merge(reuseFactoryLayer, runDisplayLayer);
-
-      const result = await Effect.runPromise(
-        Effect.gen(function* () {
-          const display = yield* Display;
-          yield* display.intro(runOptions.name ?? "sandcastle");
-
-          return yield* orchestrate({
-            hostRepoDir,
-            iterations: maxIterations,
-            prompt: resolvedPrompt,
-            branch,
-            provider,
-            completionSignal: runOptions.completionSignal,
-            idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
-            name: runOptions.name,
-          });
-        }).pipe(Effect.provide(runLayer)),
+      const runLayer = Layer.mergeAll(
+        reuseFactoryLayer,
+        runDisplayLayer,
+        defaultSessionPathsLayer,
       );
 
+      let result;
+      try {
+        result = await Effect.runPromise(
+          Effect.gen(function* () {
+            const display = yield* Display;
+            yield* display.intro(runOptions.name ?? "sandcastle");
+
+            return yield* orchestrate({
+              hostRepoDir,
+              iterations: maxIterations,
+              prompt: resolvedPrompt,
+              branch,
+              provider,
+              completionSignal: runOptions.completionSignal,
+              idleTimeoutSeconds: runOptions.idleTimeoutSeconds,
+              name: runOptions.name,
+              signal: runOptions.signal,
+            });
+          }).pipe(Effect.provide(runLayer)),
+        );
+      } catch (error: unknown) {
+        // If the signal was aborted, surface its reason verbatim
+        runOptions.signal?.throwIfAborted();
+        throw error;
+      }
+
       return {
-        iterationsRun: result.iterationsRun,
+        iterations: result.iterations,
         completionSignal: result.completionSignal,
         stdout: result.stdout,
         commits: result.commits,
@@ -290,6 +330,9 @@ const buildSandboxHandle = (
     interactive: async (
       interactiveOptions: SandboxInteractiveOptions,
     ): Promise<SandboxInteractiveResult> => {
+      // If signal is already aborted, reject immediately without any setup
+      interactiveOptions.signal?.throwIfAborted();
+
       const { agent: provider, prompt, promptFile } = interactiveOptions;
 
       if (!provider.buildInteractiveArgs) {
@@ -307,65 +350,95 @@ const buildSandboxHandle = (
       const interactiveExecFn =
         providerHandle.interactiveExec.bind(providerHandle);
 
-      const lifecycleResult = await Effect.runPromise(
-        Effect.gen(function* () {
-          const rawPrompt = yield* resolvePrompt({ prompt, promptFile });
+      let lifecycleResult;
+      try {
+        lifecycleResult = await Effect.runPromise(
+          Effect.gen(function* () {
+            const rawPrompt = yield* resolvePrompt({ prompt, promptFile });
 
-          const userArgs = interactiveOptions.promptArgs ?? {};
-          const currentHostBranch =
-            yield* WorktreeManager.getCurrentBranch(hostRepoDir);
+            const userArgs = interactiveOptions.promptArgs ?? {};
+            const currentHostBranch =
+              yield* WorktreeManager.getCurrentBranch(hostRepoDir);
 
-          yield* validateNoBuiltInArgOverride(userArgs);
-          const effectiveArgs = {
-            SOURCE_BRANCH: branch,
-            TARGET_BRANCH: currentHostBranch,
-            ...userArgs,
-          };
-          const builtInArgKeysSet = new Set<string>(BUILT_IN_PROMPT_ARG_KEYS);
-          const resolvedPrompt = yield* substitutePromptArgs(
-            rawPrompt,
-            effectiveArgs,
-            builtInArgKeysSet,
-          );
+            yield* validateNoBuiltInArgOverride(userArgs);
+            const effectiveArgs = {
+              SOURCE_BRANCH: branch,
+              TARGET_BRANCH: currentHostBranch,
+              ...userArgs,
+            };
+            const builtInArgKeysSet = new Set<string>(BUILT_IN_PROMPT_ARG_KEYS);
+            const resolvedPrompt = yield* substitutePromptArgs(
+              rawPrompt,
+              effectiveArgs,
+              builtInArgKeysSet,
+            );
 
-          return yield* withSandboxLifecycle(
-            {
-              hostRepoDir,
-              sandboxRepoDir,
-              branch,
-              hostWorktreePath: worktreePath,
-              applyToHost,
-            },
-            (ctx) =>
-              Effect.gen(function* () {
-                const fullPrompt = yield* preprocessPrompt(
-                  resolvedPrompt,
-                  ctx.sandbox,
-                  ctx.sandboxRepoDir,
-                );
+            return yield* withSandboxLifecycle(
+              {
+                hostRepoDir,
+                sandboxRepoDir,
+                branch,
+                hostWorktreePath: worktreePath,
+                applyToHost,
+              },
+              (ctx) =>
+                Effect.gen(function* () {
+                  const fullPrompt = yield* preprocessPrompt(
+                    resolvedPrompt,
+                    ctx.sandbox,
+                    ctx.sandboxRepoDir,
+                  );
 
-                const interactiveArgs = provider.buildInteractiveArgs!({
-                  prompt: fullPrompt,
-                  dangerouslySkipPermissions: true,
-                });
-                const result = yield* Effect.promise(() =>
-                  interactiveExecFn(interactiveArgs, {
+                  const interactiveArgs = provider.buildInteractiveArgs!({
+                    prompt: fullPrompt,
+                    dangerouslySkipPermissions: true,
+                  });
+                  const execPromise = interactiveExecFn(interactiveArgs, {
                     stdin: process.stdin,
                     stdout: process.stdout,
                     stderr: process.stderr,
                     cwd: sandboxRepoDir,
-                  }),
-                );
+                  });
 
-                return result.exitCode;
-              }),
-          );
-        }).pipe(
-          Effect.provide(sandboxLayer),
-          Effect.provide(ClackDisplay.layer),
-          Effect.provide(NodeContext.layer),
-        ),
-      );
+                  // Race exec with abort signal if provided
+                  const signal = interactiveOptions.signal;
+                  const result = yield* Effect.promise(() => {
+                    if (!signal) return execPromise;
+                    if (signal.aborted) return Promise.reject(signal.reason);
+                    return new Promise<{ exitCode: number }>(
+                      (resolve, reject) => {
+                        const onAbort = () => reject(signal.reason);
+                        signal.addEventListener("abort", onAbort, {
+                          once: true,
+                        });
+                        execPromise.then(
+                          (r) => {
+                            signal.removeEventListener("abort", onAbort);
+                            resolve(r);
+                          },
+                          (e) => {
+                            signal.removeEventListener("abort", onAbort);
+                            reject(e);
+                          },
+                        );
+                      },
+                    );
+                  });
+
+                  return result.exitCode;
+                }),
+            );
+          }).pipe(
+            Effect.provide(sandboxLayer),
+            Effect.provide(ClackDisplay.layer),
+            Effect.provide(NodeContext.layer),
+          ),
+        );
+      } catch (error: unknown) {
+        // If the signal was aborted, surface its reason verbatim
+        interactiveOptions.signal?.throwIfAborted();
+        throw error;
+      }
 
       return {
         commits: lifecycleResult.commits,
@@ -389,12 +462,7 @@ export interface CreateSandboxFromWorktreeOptions {
   readonly worktreePath: string;
   readonly hostRepoDir: string;
   readonly sandbox: SandboxProvider;
-  readonly hooks?: {
-    readonly onSandboxReady?: ReadonlyArray<{
-      command: string;
-      sudo?: boolean;
-    }>;
-  };
+  readonly hooks?: SandboxHooks;
   readonly copyToWorktree?: string[];
   readonly _test?: {
     readonly buildSandboxLayer?: (
@@ -481,23 +549,33 @@ export const createSandboxFromWorktree = async (
     sandboxRepoDir = startResult.worktreePath;
   }
 
-  // 3. Run onSandboxReady hooks
-  if (options.hooks?.onSandboxReady?.length) {
+  // 3. Run onSandboxReady hooks (sandbox-side and host-side in parallel)
+  const sandboxOnReady = options.hooks?.sandbox?.onSandboxReady;
+  const hostOnReady = options.hooks?.host?.onSandboxReady;
+
+  if (sandboxOnReady?.length || hostOnReady?.length) {
     await Effect.runPromise(
       Effect.gen(function* () {
         const sandbox = yield* SandboxTag;
         yield* sandbox.exec(
           `git config --global --add safe.directory "${sandboxRepoDir}"`,
         );
-        yield* Effect.all(
-          options.hooks!.onSandboxReady!.map((hook) =>
-            sandbox.exec(hook.command, {
-              cwd: sandboxRepoDir,
-              sudo: hook.sudo,
-            }),
-          ),
-          { concurrency: "unbounded" },
+        const sandboxEffects = (sandboxOnReady ?? []).map((hook) =>
+          sandbox.exec(hook.command, {
+            cwd: sandboxRepoDir,
+            sudo: hook.sudo,
+          }),
         );
+        const allEffects = [...sandboxEffects] as Effect.Effect<
+          unknown,
+          unknown
+        >[];
+        if (hostOnReady?.length) {
+          allEffects.push(runHostHooks(hostOnReady, worktreePath));
+        }
+        yield* Effect.all(allEffects, {
+          concurrency: "unbounded",
+        });
       }).pipe(Effect.provide(sandboxLayer)),
     );
   }
@@ -538,23 +616,21 @@ export const createSandboxFromWorktree = async (
 export const createSandbox = async (
   options: CreateSandboxOptions,
 ): Promise<Sandbox> => {
-  const hostRepoDir = options._test?.hostRepoDir ?? process.cwd();
   const { branch } = options;
   const isTestMode = !!options._test?.buildSandboxLayer;
 
-  // 1. Prune stale worktrees + create worktree on the explicit branch
-  const worktreeInfo = await Effect.runPromise(
-    WorktreeManager.pruneStale(hostRepoDir)
-      .pipe(Effect.catchAll(() => Effect.void))
-      .pipe(
-        Effect.andThen(
-          WorktreeManager.create(hostRepoDir, {
-            branch,
-            throwOnDuplicateWorktree: options.throwOnDuplicateWorktree,
-          }),
-        ),
-      )
-      .pipe(Effect.provide(NodeContext.layer)),
+  // 1. Resolve cwd, prune stale worktrees + create worktree on the explicit branch
+  const { hostRepoDir, worktreeInfo } = await Effect.runPromise(
+    Effect.gen(function* () {
+      const hostRepoDir = yield* resolveCwd(options.cwd);
+      yield* WorktreeManager.pruneStale(hostRepoDir).pipe(
+        Effect.catchAll(() => Effect.void),
+      );
+      const worktreeInfo = yield* WorktreeManager.create(hostRepoDir, {
+        branch,
+      });
+      return { hostRepoDir, worktreeInfo };
+    }).pipe(Effect.provide(NodeContext.layer)),
   );
 
   const worktreePath = worktreeInfo.path;
@@ -567,6 +643,13 @@ export const createSandbox = async (
   ) {
     await Effect.runPromise(
       copyToWorktree(options.copyToWorktree, hostRepoDir, worktreePath),
+    );
+  }
+
+  // 2b. Run host.onWorktreeReady hooks (after copyToWorktree, before sandbox creation)
+  if (options.hooks?.host?.onWorktreeReady?.length) {
+    await Effect.runPromise(
+      runHostHooks(options.hooks.host.onWorktreeReady, worktreePath),
     );
   }
 
@@ -627,25 +710,37 @@ export const createSandbox = async (
     sandboxRepoDir = startResult.worktreePath;
   }
 
-  // 4. Run onSandboxReady hooks
-  if (options.hooks?.onSandboxReady?.length) {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const sandbox = yield* SandboxTag;
-        yield* sandbox.exec(
-          `git config --global --add safe.directory "${sandboxRepoDir}"`,
-        );
-        yield* Effect.all(
-          options.hooks!.onSandboxReady!.map((hook) =>
+  // 4. Run onSandboxReady hooks (sandbox-side and host-side in parallel)
+  {
+    const sandboxOnReady = options.hooks?.sandbox?.onSandboxReady;
+    const hostOnReady = options.hooks?.host?.onSandboxReady;
+
+    if (sandboxOnReady?.length || hostOnReady?.length) {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const sandbox = yield* SandboxTag;
+          yield* sandbox.exec(
+            `git config --global --add safe.directory "${sandboxRepoDir}"`,
+          );
+          const sandboxEffects = (sandboxOnReady ?? []).map((hook) =>
             sandbox.exec(hook.command, {
               cwd: sandboxRepoDir,
               sudo: hook.sudo,
             }),
-          ),
-          { concurrency: "unbounded" },
-        );
-      }).pipe(Effect.provide(sandboxLayer)),
-    );
+          );
+          const allEffects = [...sandboxEffects] as Effect.Effect<
+            unknown,
+            unknown
+          >[];
+          if (hostOnReady?.length) {
+            allEffects.push(runHostHooks(hostOnReady, worktreePath));
+          }
+          yield* Effect.all(allEffects, {
+            concurrency: "unbounded",
+          });
+        }).pipe(Effect.provide(sandboxLayer)),
+      );
+    }
   }
 
   // 5. Build applyToHost callback (once, reused across runs)

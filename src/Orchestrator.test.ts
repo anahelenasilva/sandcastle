@@ -2,7 +2,14 @@ import { Cause, Effect, Layer, Ref } from "effect";
 import { exec } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -20,13 +27,17 @@ import { Sandbox } from "./SandboxFactory.js";
 import type { DockerError, SandboxError } from "./errors.js";
 import { AgentIdleTimeoutError } from "./errors.js";
 import { SandboxFactory } from "./SandboxFactory.js";
+import { encodeProjectPath } from "./SessionStore.js";
+import { defaultSessionPathsLayer, sessionPathsLayer } from "./SessionPaths.js";
+import type { BindMountSandboxHandle } from "./SandboxProvider.js";
 
 const execAsync = promisify(exec);
 
 const testProvider = claudeCode("test-model");
 
-const testDisplayLayer = SilentDisplay.layer(
-  Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([]),
+const testDisplayLayer = Layer.merge(
+  SilentDisplay.layer(Ref.unsafeMake<ReadonlyArray<DisplayEntry>>([])),
+  defaultSessionPathsLayer,
 );
 
 const initRepo = async (dir: string) => {
@@ -52,8 +63,17 @@ const getHead = async (dir: string) => {
 };
 
 /** Format a mock agent result as stream-json lines (mimicking Claude's output) */
-const toStreamJson = (output: string): string => {
+const toStreamJson = (output: string, sessionId?: string): string => {
   const lines: string[] = [];
+  if (sessionId) {
+    lines.push(
+      JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: sessionId,
+      }),
+    );
+  }
   lines.push(
     JSON.stringify({
       type: "assistant",
@@ -220,7 +240,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBeUndefined();
 
     // Verify the agent's commit was synced back to host
@@ -254,7 +274,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
   });
 
@@ -284,7 +304,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("TASK_FINISHED");
   });
 
@@ -315,7 +335,7 @@ describe("Orchestrator", () => {
     );
 
     // Custom signal not in output, so all iterations run
-    expect(result.iterationsRun).toBe(2);
+    expect(result.iterations.length).toBe(2);
     expect(result.completionSignal).toBeUndefined();
   });
 
@@ -345,7 +365,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("TASK_ABORTED");
   });
 
@@ -375,7 +395,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("TASK_FINISHED");
   });
 
@@ -405,7 +425,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(2);
+    expect(result.iterations.length).toBe(2);
     expect(result.completionSignal).toBeUndefined();
   });
 
@@ -458,7 +478,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(3);
+    expect(result.iterations.length).toBe(3);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
 
     // Verify all 3 iteration files arrived on host
@@ -494,7 +514,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(2);
+    expect(result.iterations.length).toBe(2);
     expect(result.completionSignal).toBeUndefined();
 
     // Host should still be at the original commit
@@ -539,7 +559,7 @@ describe("Orchestrator", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(2);
+    expect(result.iterations.length).toBe(2);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
     // Untracked file from iteration 1 must not exist in iteration 2's sandbox
     expect(markerExistedInIter2).toBe(false);
@@ -1089,7 +1109,13 @@ describe("Orchestrator tool call display integration", () => {
         iterations: 1,
         prompt: "do some work",
       }).pipe(
-        Effect.provide(Layer.merge(mockLayer.factoryLayer, displayLayer)),
+        Effect.provide(
+          Layer.mergeAll(
+            mockLayer.factoryLayer,
+            displayLayer,
+            defaultSessionPathsLayer,
+          ),
+        ),
       ),
     );
 
@@ -1221,7 +1247,7 @@ describe("Orchestrator error handling", () => {
     );
 
     // Should detect COMPLETE from the stdout fallback
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
   });
 
@@ -1328,20 +1354,20 @@ describe("Orchestrator error handling", () => {
     expect(exit._tag).toBe("Failure");
   });
 
-  it("propagates error when getSandboxHead fails (empty repo)", async () => {
+  it("propagates error when sandbox branch resolution fails", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "orch-nohead-host-"));
 
     await initRepo(hostDir);
     await commitFile(hostDir, "hello.txt", "hello", "initial commit");
 
-    // Layer that sabotages HEAD resolution by making git rev-parse HEAD always fail
+    // Layer that sabotages branch resolution in the sandbox
     const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
       hostDir,
       (dir) => {
         const fsLayer = makeLocalSandboxLayer(dir);
         return Layer.succeed(Sandbox, {
           exec: (command, options) => {
-            if (command === "git rev-parse HEAD") {
+            if (command === "git rev-parse --abbrev-ref HEAD") {
               return Effect.succeed({
                 stdout: "",
                 stderr: "fatal: ambiguous argument 'HEAD'",
@@ -1466,7 +1492,7 @@ describe("Orchestrator streaming", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
   });
 
@@ -1593,7 +1619,7 @@ describe("Orchestrator prompt preprocessing", () => {
     await initRepo(hostDir);
     await commitFile(hostDir, "hello.txt", "hello", "initial commit");
 
-    let capturedPrompt = "";
+    let capturedStdin = "";
 
     const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
       hostDir,
@@ -1603,8 +1629,8 @@ describe("Orchestrator prompt preprocessing", () => {
           exec: (command, options) => {
             if (command.startsWith("claude ") && options?.onLine) {
               const onLine = options.onLine;
-              // Capture the prompt passed to claude
-              capturedPrompt = command;
+              // Capture the prompt delivered via stdin
+              capturedStdin = options?.stdin ?? "";
               const output = "Done.";
               const streamOutput = toStreamJson(output);
               for (const line of streamOutput.split("\n")) {
@@ -1643,8 +1669,8 @@ describe("Orchestrator prompt preprocessing", () => {
     );
 
     // The prompt should have !`echo hello-from-sandbox` replaced with "hello-from-sandbox"
-    expect(capturedPrompt).toContain("hello-from-sandbox");
-    expect(capturedPrompt).not.toContain("!`echo");
+    expect(capturedStdin).toContain("hello-from-sandbox");
+    expect(capturedStdin).not.toContain("!`echo");
   });
 
   it("passes prompt through unchanged when no !`command` expressions", async () => {
@@ -1653,17 +1679,9 @@ describe("Orchestrator prompt preprocessing", () => {
     await initRepo(hostDir);
     await commitFile(hostDir, "hello.txt", "hello", "initial commit");
 
-    let capturedPrompt = "";
+    let capturedStdin = "";
 
-    const { factoryLayer, sandboxRepoDir } = makeTestSandboxFactory(
-      hostDir,
-      (dir) =>
-        makeMockAgentLayer(dir, async () => {
-          return "Done.";
-        }),
-    );
-
-    // Intercept to capture prompt — use the simpler mock that captures command
+    // Intercept to capture prompt delivered via stdin
     const { factoryLayer: fl2, sandboxRepoDir: sr2 } = makeTestSandboxFactory(
       hostDir,
       (dir) => {
@@ -1672,7 +1690,7 @@ describe("Orchestrator prompt preprocessing", () => {
           exec: (command, options) => {
             if (command.startsWith("claude ") && options?.onLine) {
               const onLine = options.onLine;
-              capturedPrompt = command;
+              capturedStdin = options?.stdin ?? "";
               const output = "Done.";
               const streamOutput = toStreamJson(output);
               for (const line of streamOutput.split("\n")) {
@@ -1709,7 +1727,7 @@ describe("Orchestrator prompt preprocessing", () => {
       }).pipe(Effect.provide(Layer.merge(fl2, testDisplayLayer))),
     );
 
-    expect(capturedPrompt).toContain("Just a plain prompt with no commands.");
+    expect(capturedStdin).toContain("Just a plain prompt with no commands.");
   });
 });
 
@@ -1738,7 +1756,11 @@ describe("Orchestrator Display integration", () => {
 
         iterations: 5,
         prompt: "do some work",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -1801,7 +1823,11 @@ describe("Orchestrator Display integration", () => {
 
         iterations: 2,
         prompt: "do some work",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -1875,7 +1901,11 @@ describe("Orchestrator Display integration", () => {
         iterations: 1,
         prompt: "do some work",
         name: "issue-42",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -1915,7 +1945,11 @@ describe("Orchestrator Display integration", () => {
 
         iterations: 1,
         prompt: "do some work",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -2161,7 +2195,9 @@ describe("Orchestrator Display integration", () => {
         idleTimeoutSeconds: 10, // high enough not to kill
         _idleWarningIntervalMs: 100, // fire warnings every 100ms for testing
       }).pipe(
-        Effect.provide(Layer.merge(factoryLayer, displayLayer)),
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
         Effect.exit,
       ),
     );
@@ -2252,7 +2288,9 @@ describe("Orchestrator Display integration", () => {
         idleTimeoutSeconds: 10,
         _idleWarningIntervalMs: 100,
       }).pipe(
-        Effect.provide(Layer.merge(factoryLayer, displayLayer)),
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
         Effect.exit,
       ),
     );
@@ -2384,7 +2422,7 @@ describe("Orchestrator with pi provider", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     const content = await readFile(join(hostDir, "pi-output.txt"), "utf-8");
     expect(content).toBe("pi was here");
   });
@@ -2412,7 +2450,7 @@ describe("Orchestrator with pi provider", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
   });
 
@@ -2498,7 +2536,11 @@ describe("Orchestrator with pi provider", () => {
 
         iterations: 1,
         prompt: "do some work",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -2582,7 +2624,11 @@ describe("Orchestrator with pi provider", () => {
 
         iterations: 1,
         prompt: "do some work",
-      }).pipe(Effect.provide(Layer.merge(factoryLayer, displayLayer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(factoryLayer, displayLayer, defaultSessionPathsLayer),
+        ),
+      ),
     );
 
     const entries = await Effect.runPromise(Ref.get(ref));
@@ -2614,7 +2660,7 @@ const toCodexStreamJson = (output: string): string => {
   lines.push(
     JSON.stringify({
       type: "item.completed",
-      item: { type: "agent_message", content: output },
+      item: { type: "agent_message", text: output },
     }),
   );
   return lines.join("\n");
@@ -2699,7 +2745,7 @@ describe("Orchestrator with codex provider", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
     const content = await readFile(join(hostDir, "codex-output.txt"), "utf-8");
     expect(content).toBe("codex was here");
   });
@@ -2727,7 +2773,586 @@ describe("Orchestrator with codex provider", () => {
       }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
     );
 
-    expect(result.iterationsRun).toBe(1);
+    expect(result.iterations.length).toBe(1);
+    expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
+  });
+});
+
+describe("Session capture integration", () => {
+  /**
+   * Create a test factory that provides a bindMountHandle with copyFileIn/copyFileOut
+   * backed by the filesystem. This allows session capture to work through the
+   * sandboxSessionStore → transferSession → hostSessionStore path.
+   */
+  const makeSessionCaptureFactory = (
+    hostRepoDir: string,
+    mockAgentBehavior: (sandboxRepoDir: string) => Promise<string>,
+    sessionId: string,
+  ): { factoryLayer: Layer.Layer<SandboxFactory> } => {
+    const sandboxBaseDir = join(tmpdir(), `orch-session-${randomUUID()}`);
+    let branchCounter = 0;
+
+    const factoryLayer = Layer.succeed(SandboxFactory, {
+      withSandbox: <A, E, R>(
+        makeEffect: (
+          info: import("./SandboxFactory.js").SandboxInfo,
+        ) => Effect.Effect<A, E, R | Sandbox>,
+      ): Effect.Effect<
+        import("./SandboxFactory.js").WithSandboxResult<A>,
+        E | DockerError,
+        Exclude<R, Sandbox>
+      > =>
+        Effect.acquireUseRelease(
+          Effect.promise(async () => {
+            await rm(sandboxBaseDir, { recursive: true, force: true });
+            const branchName = `sandcastle/test-${++branchCounter}`;
+            await execAsync(
+              `git worktree add -b "${branchName}" "${sandboxBaseDir}" HEAD`,
+              { cwd: hostRepoDir },
+            );
+            return branchName;
+          }),
+          (_branchName) => {
+            // Create a bind-mount handle backed by filesystem copy
+            const handle: BindMountSandboxHandle = {
+              worktreePath: sandboxBaseDir,
+              exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+              copyFileIn: async (hostPath, sandboxPath) => {
+                await mkdir(join(sandboxPath, ".."), { recursive: true });
+                await copyFile(hostPath, sandboxPath);
+              },
+              copyFileOut: async (sandboxPath, hostPath) => {
+                await mkdir(join(hostPath, ".."), { recursive: true });
+                await copyFile(sandboxPath, hostPath);
+              },
+              close: async () => {},
+            };
+
+            // Build a sandbox layer that intercepts claude commands
+            const fsLayer = makeLocalSandboxLayer(sandboxBaseDir);
+            const sandboxLayer = Layer.succeed(Sandbox, {
+              exec: (command, options) => {
+                if (command.startsWith("claude ") && options?.onLine) {
+                  const onLine = options.onLine;
+                  return Effect.gen(function* () {
+                    const cwd = options?.cwd ?? sandboxBaseDir;
+                    const output = yield* Effect.promise(() =>
+                      mockAgentBehavior(cwd),
+                    );
+                    const streamOutput = toStreamJson(output, sessionId);
+                    for (const line of streamOutput.split("\n")) {
+                      onLine(line);
+                    }
+                    return { stdout: streamOutput, stderr: "", exitCode: 0 };
+                  });
+                }
+                return Effect.flatMap(Sandbox, (real) =>
+                  real.exec(command, options),
+                ).pipe(Effect.provide(fsLayer));
+              },
+              copyIn: (hostPath, sandboxPath) =>
+                Effect.flatMap(Sandbox, (real) =>
+                  real.copyIn(hostPath, sandboxPath),
+                ).pipe(Effect.provide(fsLayer)),
+              copyFileOut: (sandboxPath, hostPath) =>
+                Effect.flatMap(Sandbox, (real) =>
+                  real.copyFileOut(sandboxPath, hostPath),
+                ).pipe(Effect.provide(fsLayer)),
+            });
+
+            return makeEffect({
+              hostWorktreePath: sandboxBaseDir,
+              sandboxRepoPath: sandboxBaseDir,
+              applyToHost: () => Effect.void,
+              bindMountHandle: handle,
+            }).pipe(Effect.provide(sandboxLayer)) as Effect.Effect<
+              A,
+              E | DockerError,
+              Exclude<R, Sandbox>
+            >;
+          },
+          (_branchName) =>
+            Effect.promise(async () => {
+              try {
+                await execAsync(
+                  `git worktree remove "${sandboxBaseDir}" --force`,
+                  { cwd: hostRepoDir },
+                ).catch(() => {});
+              } catch {}
+            }),
+        ).pipe(
+          Effect.map((value) => ({ value, preservedWorktreePath: undefined })),
+        ),
+    });
+
+    return { factoryLayer };
+  };
+
+  it("captures session JSONL to host and populates sessionFilePath", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-capture-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-capture-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-capture-sb-projects-"),
+    );
+    const mockSessionId = "test-session-abc-123";
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async (repoDir) => {
+        // Write a session JSONL file into the sandbox's session store location
+        const encoded = encodeProjectPath(repoDir);
+        const sessionsDir = join(sandboxProjectsDir, encoded);
+        // Since our sandbox IS the filesystem, write the session file at the
+        // expected sandbox path (the handle's copyFileOut will just do a fs copy)
+        await mkdir(sessionsDir, { recursive: true });
+        await writeFile(
+          join(sessionsDir, `${mockSessionId}.jsonl`),
+          // Use sandbox cwd (repoDir) — transferSession should rewrite to host cwd
+          [
+            JSON.stringify({ type: "system", cwd: repoDir }),
+            JSON.stringify({ type: "message", cwd: repoDir, text: "hello" }),
+          ].join("\n"),
+        );
+        return "Done. <promise>COMPLETE</promise>";
+      },
+      mockSessionId,
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({ hostProjectsDir, sandboxProjectsDir }),
+          ),
+        ),
+      ),
+    );
+
+    // Verify iteration result
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0]!.sessionId).toBe(mockSessionId);
+    expect(result.iterations[0]!.sessionFilePath).toBeDefined();
+
+    // Verify the captured file exists on the host
+    const capturedPath = result.iterations[0]!.sessionFilePath!;
+    const capturedContent = await readFile(capturedPath, "utf-8");
+    const lines = capturedContent.split("\n");
+
+    // Verify cwd was rewritten from sandbox cwd to host cwd
+    const firstEntry = JSON.parse(lines[0]!) as { cwd: string };
+    expect(firstEntry.cwd).toBe(hostDir);
+    const secondEntry = JSON.parse(lines[1]!) as { cwd: string; text: string };
+    expect(secondEntry.cwd).toBe(hostDir);
+    expect(secondEntry.text).toBe("hello");
+  });
+
+  it("skips capture for non-Claude agents (captureSessions: false)", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-nocapture-host-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // Use claudeCode with captureSessions: false to test the flag
+    // (Using claudeCode so the mock agent layer intercepts correctly)
+    const provider = claudeCode("test-model", { captureSessions: false });
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        return "Done.";
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0]!.sessionFilePath).toBeUndefined();
+  });
+
+  it("skips capture when no sessionId is extracted", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-nosession-host-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // Use default factory (no bindMountHandle, no session_id in stream)
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        return "Done.";
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0]!.sessionId).toBeUndefined();
+    expect(result.iterations[0]!.sessionFilePath).toBeUndefined();
+  });
+
+  it("resumes a session: transfers JSONL to sandbox and passes --resume to agent", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-resume-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-resume-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-resume-sb-projects-"),
+    );
+    const mockSessionId = "resume-session-xyz";
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    // Write a session JSONL on the host (simulating a prior capture)
+    const encoded = encodeProjectPath(hostDir);
+    const hostSessionsDir = join(hostProjectsDir, encoded);
+    await mkdir(hostSessionsDir, { recursive: true });
+    await writeFile(
+      join(hostSessionsDir, `${mockSessionId}.jsonl`),
+      [
+        JSON.stringify({ type: "system", cwd: hostDir }),
+        JSON.stringify({ type: "message", cwd: hostDir, text: "prior work" }),
+      ].join("\n"),
+    );
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async (repoDir) => {
+        // Verify that the session JSONL was transferred into the sandbox
+        const sbEncoded = encodeProjectPath(repoDir);
+        const sbSessionPath = join(
+          sandboxProjectsDir,
+          sbEncoded,
+          `${mockSessionId}.jsonl`,
+        );
+        const content = await readFile(sbSessionPath, "utf-8");
+        const lines = content.split("\n");
+        // Verify cwd was rewritten from host to sandbox
+        const firstEntry = JSON.parse(lines[0]!) as { cwd: string };
+        expect(firstEntry.cwd).toBe(repoDir);
+
+        // Also write the new session file the agent would produce
+        const sessionsDir = join(sandboxProjectsDir, sbEncoded);
+        await mkdir(sessionsDir, { recursive: true });
+        await writeFile(
+          join(sessionsDir, `${mockSessionId}.jsonl`),
+          [
+            JSON.stringify({ type: "system", cwd: repoDir }),
+            JSON.stringify({
+              type: "message",
+              cwd: repoDir,
+              text: "continued work",
+            }),
+          ].join("\n"),
+        );
+
+        return "Done. <promise>COMPLETE</promise>";
+      },
+      mockSessionId,
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "continue working",
+        resumeSession: mockSessionId,
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({ hostProjectsDir, sandboxProjectsDir }),
+          ),
+        ),
+      ),
+    );
+
+    // Verify iteration result
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0]!.sessionId).toBe(mockSessionId);
+    expect(result.iterations[0]!.sessionFilePath).toBeDefined();
+
+    // Verify the captured file on host has rewritten cwd
+    const capturedPath = result.iterations[0]!.sessionFilePath!;
+    const capturedContent = await readFile(capturedPath, "utf-8");
+    const capturedLines = capturedContent.split("\n");
+    const entry = JSON.parse(capturedLines[0]!) as { cwd: string };
+    expect(entry.cwd).toBe(hostDir);
+  });
+
+  it("populates usage on IterationResult when session has assistant usage", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-usage-host-"));
+    const hostProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-usage-projects-"),
+    );
+    const sandboxProjectsDir = await mkdtemp(
+      join(tmpdir(), "orch-usage-sb-projects-"),
+    );
+    const mockSessionId = "usage-session-123";
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeSessionCaptureFactory(
+      hostDir,
+      async (repoDir) => {
+        const encoded = encodeProjectPath(repoDir);
+        const sessionsDir = join(sandboxProjectsDir, encoded);
+        await mkdir(sessionsDir, { recursive: true });
+        await writeFile(
+          join(sessionsDir, `${mockSessionId}.jsonl`),
+          [
+            JSON.stringify({
+              type: "system",
+              subtype: "init",
+              session_id: mockSessionId,
+            }),
+            JSON.stringify({
+              type: "assistant",
+              message: {
+                model: "claude-opus-4-6",
+                usage: {
+                  input_tokens: 3,
+                  cache_creation_input_tokens: 9294,
+                  cache_read_input_tokens: 8526,
+                  output_tokens: 458,
+                },
+              },
+            }),
+          ].join("\n"),
+        );
+        return "Done. <promise>COMPLETE</promise>";
+      },
+      mockSessionId,
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            factoryLayer,
+            testDisplayLayer,
+            sessionPathsLayer({ hostProjectsDir, sandboxProjectsDir }),
+          ),
+        ),
+      ),
+    );
+
+    expect(result.iterations[0]!.usage).toEqual({
+      inputTokens: 3,
+      cacheCreationInputTokens: 9294,
+      cacheReadInputTokens: 8526,
+      outputTokens: 458,
+    });
+  });
+
+  it("usage is undefined when captureSessions is false", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-nousage-host-"));
+
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const provider = claudeCode("test-model", { captureSessions: false });
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        return "Done.";
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    expect(result.iterations[0]!.usage).toBeUndefined();
+  });
+});
+
+describe("Orchestrator signal (AbortSignal)", () => {
+  it("rejects with pre-aborted signal before running any iteration", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    let agentCalled = false;
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        agentCalled = true;
+        return "Done.";
+      }),
+    );
+
+    const ac = new AbortController();
+    ac.abort("pre-aborted");
+
+    await expect(
+      Effect.runPromise(
+        orchestrate({
+          provider: testProvider,
+          hostRepoDir: hostDir,
+          iterations: 1,
+          prompt: "do some work",
+          signal: ac.signal,
+        }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+      ),
+    ).rejects.toThrow("pre-aborted");
+
+    expect(agentCalled).toBe(false);
+  });
+
+  it("aborts mid-iteration and rejects", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const ac = new AbortController();
+
+    // Mock agent that takes a while — abort fires while it's running
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        // Simulate slow agent: abort mid-flight
+        ac.abort("cancelled mid-iteration");
+        // Give the abort a tick to propagate
+        await new Promise((r) => setTimeout(r, 10));
+        return "Done.";
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(
+        orchestrate({
+          provider: testProvider,
+          hostRepoDir: hostDir,
+          iterations: 1,
+          prompt: "do some work",
+          signal: ac.signal,
+        }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+      ),
+    ).rejects.toThrow("cancelled mid-iteration");
+  });
+
+  it("aborts between iterations and does not start the next one", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const ac = new AbortController();
+    let iterationCount = 0;
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        iterationCount++;
+        if (iterationCount === 1) {
+          // After first iteration completes, abort before second starts
+          ac.abort("cancelled between iterations");
+        }
+        return `Iteration ${iterationCount} done.`;
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(
+        orchestrate({
+          provider: testProvider,
+          hostRepoDir: hostDir,
+          iterations: 5,
+          prompt: "do some work",
+          signal: ac.signal,
+        }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+      ),
+    ).rejects.toThrow("cancelled between iterations");
+
+    expect(iterationCount).toBe(1);
+  });
+
+  it("abort after completion is a no-op", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const ac = new AbortController();
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        return "All done. <promise>COMPLETE</promise>";
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+        signal: ac.signal,
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    // Abort after completion — should not throw or affect result
+    ac.abort("too late");
+
+    expect(result.iterations.length).toBe(1);
+    expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
+  });
+
+  it("works normally when no signal is provided", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "orch-host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+    const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+      makeMockAgentLayer(dir, async () => {
+        return "Done. <promise>COMPLETE</promise>";
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      orchestrate({
+        provider: testProvider,
+        hostRepoDir: hostDir,
+        iterations: 1,
+        prompt: "do some work",
+        // no signal
+      }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+    );
+
+    expect(result.iterations.length).toBe(1);
     expect(result.completionSignal).toBe("<promise>COMPLETE</promise>");
   });
 });

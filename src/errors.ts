@@ -159,8 +159,21 @@ export const withTimeout =
       }),
     );
 
+/** Session capture (read, rewrite, or write) failed */
+export class SessionCaptureError extends Data.TaggedError(
+  "SessionCaptureError",
+)<{
+  readonly message: string;
+  readonly sessionId: string;
+}> {}
+
+/** The provided `cwd` path does not exist or is not a directory. */
+export { CwdError } from "./resolveCwd.js";
+import type { CwdError } from "./resolveCwd.js";
+
 /** Union of all sandbox-related errors */
 export type SandboxError =
+  | CwdError
   | ExecError
   | ExecHostError
   | CopyError
@@ -181,4 +194,5 @@ export type SandboxError =
   | GitSetupTimeoutError
   | PromptExpansionTimeoutError
   | CommitCollectionTimeoutError
-  | MergeToHostTimeoutError;
+  | MergeToHostTimeoutError
+  | SessionCaptureError;

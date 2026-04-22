@@ -11,7 +11,11 @@ import {
   resolveGitMounts,
   SANDBOX_REPO_DIR,
 } from "./SandboxFactory.js";
-import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
+import {
+  withSandboxLifecycle,
+  runHostHooks,
+  type SandboxHooks,
+} from "./SandboxLifecycle.js";
 import type {
   AnySandboxProvider,
   BranchStrategy,
@@ -34,6 +38,8 @@ import {
   BUILT_IN_PROMPT_ARG_KEYS,
 } from "./PromptArgumentSubstitution.js";
 import { noSandbox } from "./sandboxes/no-sandbox.js";
+import { raceAbortSignal } from "./raceAbortSignal.js";
+import { resolveCwd } from "./resolveCwd.js";
 
 export interface InteractiveOptions {
   /** Agent provider to use (e.g. claudeCode("claude-opus-4-6")) */
@@ -57,6 +63,25 @@ export interface InteractiveOptions {
   readonly promptArgs?: PromptArgs;
   /** Environment variables to inject into the sandbox. */
   readonly env?: Record<string, string>;
+  /**
+   * Host repo directory to use instead of `process.cwd()`.
+   *
+   * Relative paths resolve against `process.cwd()`; absolute paths pass
+   * through as-is. A {@link CwdError} is thrown if the path does not exist
+   * or is not a directory.
+   */
+  readonly cwd?: string;
+  /**
+   * An `AbortSignal` that cancels the interactive session when aborted.
+   *
+   * - If `signal.aborted` is already `true` at entry, `interactive()` rejects
+   *   immediately without doing any setup work.
+   * - Aborting during an active session kills the agent subprocess.
+   * - The rejected promise surfaces `signal.reason` via
+   *   `signal.throwIfAborted()` — no Sandcastle-specific wrapping.
+   * - The worktree is preserved on disk after abort (error-path behavior).
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface InteractiveResult {
@@ -84,6 +109,9 @@ export interface InteractiveResult {
 export const interactive = async (
   options: InteractiveOptions,
 ): Promise<InteractiveResult> => {
+  // If signal is already aborted, reject immediately without any setup
+  options.signal?.throwIfAborted();
+
   const { prompt, promptFile, hooks, agent: provider } = options;
 
   const resolvedSandbox = options.sandbox ?? noSandbox();
@@ -124,11 +152,11 @@ export const interactive = async (
   const branch: string | undefined =
     branchStrategy.type === "branch" ? branchStrategy.branch : undefined;
 
-  const hostRepoDir = process.cwd();
   const isHeadMode = branchStrategy.type === "head";
   const sandboxProvider = resolvedSandbox;
 
   const inner = Effect.gen(function* () {
+    const hostRepoDir = yield* resolveCwd(options.cwd);
     const d = yield* Display;
 
     // 1. Resolve prompt (from string or file), or skip if neither provided
@@ -236,6 +264,14 @@ export const interactive = async (
           ),
         );
       }
+
+      // Run host.onWorktreeReady hooks
+      if (hooks?.host?.onWorktreeReady?.length) {
+        yield* runHostHooks(hooks.host.onWorktreeReady, worktreeInfo!.path);
+      }
+    } else if (hooks?.host?.onWorktreeReady?.length) {
+      // Head strategy: cwd is the host repo root
+      yield* runHostHooks(hooks.host.onWorktreeReady, hostRepoDir);
     }
 
     // 6. Start sandbox
@@ -325,13 +361,17 @@ export const interactive = async (
               prompt: fullPrompt,
               dangerouslySkipPermissions: sandboxProvider.tag !== "none",
             });
-            const result = yield* Effect.promise(() =>
-              interactiveExecFn(interactiveArgs, {
-                stdin: process.stdin,
-                stdout: process.stdout,
-                stderr: process.stderr,
-                cwd: worktreePath,
-              }),
+
+            const result = yield* raceAbortSignal(
+              Effect.promise(() =>
+                interactiveExecFn(interactiveArgs, {
+                  stdin: process.stdin,
+                  stdout: process.stdout,
+                  stderr: process.stderr,
+                  cwd: worktreePath,
+                }),
+              ),
+              options.signal,
             );
 
             return result.exitCode;
@@ -392,11 +432,20 @@ export const interactive = async (
     );
   });
 
-  return Effect.runPromise(
-    inner.pipe(
-      Effect.provide(ClackDisplay.layer),
-      Effect.provide(NodeContext.layer),
-      Effect.provide(NodeFileSystem.layer),
-    ),
-  );
+  let result: InteractiveResult;
+  try {
+    result = await Effect.runPromise(
+      inner.pipe(
+        Effect.provide(ClackDisplay.layer),
+        Effect.provide(NodeContext.layer),
+        Effect.provide(NodeFileSystem.layer),
+      ),
+    );
+  } catch (error: unknown) {
+    // If the signal was aborted, surface its reason verbatim (no wrapping)
+    options.signal?.throwIfAborted();
+    throw error;
+  }
+
+  return result;
 };

@@ -116,6 +116,16 @@ _Avoid_: "command" (overloaded), "inline command", "prompt command"
 A **prompt argument** that Sandcastle injects automatically -- not provided by the user via `promptArgs`.
 _Avoid_: "system variable", "auto argument", "default prompt argument"
 
+### Hooks
+
+**Host hook**:
+A lifecycle hook that runs on the **host** machine, not inside the **sandbox**. Host hooks are `{ command: string }` — no `sudo`, no `cwd`.
+_Avoid_: "local hook"
+
+**Sandbox hook**:
+A lifecycle hook that runs inside the **sandbox** container. Sandbox hooks are `{ command: string; sudo?: boolean }`.
+_Avoid_: "container hook", "remote hook"
+
 ### Init
 
 **Init**:
@@ -148,6 +158,10 @@ _Avoid_: "setup-sandbox" (old name)
 A provider-namespaced CLI command that removes the image (e.g. `sandcastle docker remove-image`).
 _Avoid_: "cleanup-sandbox" (old name)
 
+**Agent session**:
+The **agent**'s persisted conversation record. For Claude Code, a `<session-id>.jsonl` written per **iteration**. Resumable via `claude --resume`.
+_Avoid_: "chat history", "transcript"
+
 ### Display
 
 **Log-to-file mode**:
@@ -175,6 +189,8 @@ _Avoid_: "stdout mode", "interactive mode", "CLI mode" (ambiguous with the CLI i
 - `interactive()` accepts all three **sandbox provider** types; `run()` accepts only **bind-mount** and **isolated**
 - `createSandbox()` does not accept a **no-sandbox provider**
 - **Sandbox providers** are imported from subpaths (e.g. `sandcastle/sandboxes/docker`) -- the main `sandcastle` entry point does not re-export any provider
+- **Host hooks** run on the **host**; **sandbox hooks** run inside the **sandbox**. Hooks are grouped under `host` and `sandbox` in the `hooks` option
+- Lifecycle ordering: `copyToWorktree` -> `host.onWorktreeReady` (sequential) -> sandbox created -> `host.onSandboxReady` + `sandbox.onSandboxReady` (parallel)
 - Each **iteration** may produce one or more commits; iterations repeat until the **completion signal** fires or the max count is reached
 - **Init** creates the **config directory** on the **host**, prompting the user to select an **agent** and **backlog manager**
 - **Init** performs **template argument substitution** on Dockerfiles and scaffold `.md` files, replacing **template arguments** with values derived from the user's choices
