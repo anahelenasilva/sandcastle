@@ -992,7 +992,7 @@ describe("WorktreeDockerSandboxFactory — isolated providers", () => {
             );
             commitMade = true;
             // Caller (lifecycle) is responsible for calling applyToHost
-            yield* info.applyToHost();
+            yield* info.applyToHost!();
           }),
         );
       }).pipe(Effect.provide(makeIsolatedLayer(hostDir))),
