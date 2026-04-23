@@ -294,25 +294,21 @@ export const orchestrate = (
                 // Invoke the agent — buffer text deltas so Pi's single-token
                 // chunks are displayed as readable multi-word lines.
                 const textBuffer = new TextDeltaBuffer((chunk) => {
-                  Effect.runPromise(display.text(chunk)).catch(() => {});
+                  Effect.runPromise(display.text(chunk));
                 });
                 const onText = (text: string) => {
                   textBuffer.write(text);
                 };
                 const onToolCall = (name: string, formattedArgs: string) => {
                   textBuffer.flush();
-                  Effect.runPromise(
-                    display.toolCall(name, formattedArgs),
-                  ).catch(() => {});
+                  Effect.runPromise(display.toolCall(name, formattedArgs));
                 };
                 const onIdleWarning = (minutes: number) => {
                   const msg =
                     minutes === 1
                       ? "Agent idle for 1 minute"
                       : `Agent idle for ${minutes} minutes`;
-                  Effect.runPromise(display.status(label(msg), "warn")).catch(
-                    () => {},
-                  );
+                  Effect.runPromise(display.status(label(msg), "warn"));
                 };
                 const { result: agentOutput, sessionId } = yield* invokeAgent(
                   ctx.sandbox,
