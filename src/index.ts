@@ -29,6 +29,7 @@ export type {
   WorktreeCreateSandboxOptions,
 } from "./createWorktree.js";
 export type { PromptArgs } from "./PromptArgumentSubstitution.js";
+export type { AgentStreamEvent } from "./AgentStreamEmitter.js";
 export {
   hostSessionStore,
   sandboxSessionStore,

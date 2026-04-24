@@ -188,6 +188,10 @@ _Avoid_: "log file" (too generic), "output file"
 The display mode where Sandcastle renders an interactive UI in the terminal with spinners and styled status messages.
 _Avoid_: "stdout mode", "interactive mode", "CLI mode" (ambiguous with the CLI itself)
 
+**Agent stream event**:
+A single item in the **agent**'s output stream -- either a `text` chunk or a `toolCall` -- surfaced to the caller of `run()` so the stream can be forwarded to an external observability system. Available only in **log-to-file mode** via the `onAgentStreamEvent` callback on the `logging` option. Each event carries its `iteration` number and a `timestamp`.
+_Avoid_: "log event" (the log file contains more than just agent output), "display entry" (internal UI type)
+
 ## Relationships
 
 - **Sandcastle** orchestrates an **agent** inside a **sandbox**
@@ -226,6 +230,7 @@ _Avoid_: "stdout mode", "interactive mode", "CLI mode" (ambiguous with the CLI i
 - **Log-to-file mode** is the default for programmatic use via `run()`; **terminal mode** is used when passing `logging: { type: 'stdout' }` to `run()`
 - In **log-to-file mode**, Sandcastle writes a **run log** to `.sandcastle/logs/` and prints a `tail -f` command to the console
 - In **terminal mode**, Sandcastle renders spinners, styled status messages, and summaries directly in the terminal
+- In **log-to-file mode**, callers may pass an `onAgentStreamEvent` callback on the `logging` option to receive each **agent stream event** alongside the file log -- intended for forwarding the **agent**'s output to an external observability system. The callback is sync, fire-and-forget, and errors thrown by the callback are swallowed so a broken forwarder cannot kill the run
 
 ## Example dialogue
 

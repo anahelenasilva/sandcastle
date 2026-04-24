@@ -25,6 +25,11 @@ import type { SandboxProvider, BranchStrategy } from "./SandboxProvider.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { formatErrorMessage } from "./ErrorHandler.js";
 import type { SandboxError } from "./errors.js";
+import {
+  callbackAgentStreamEmitterLayer,
+  noopAgentStreamEmitterLayer,
+  type AgentStreamEvent,
+} from "./AgentStreamEmitter.js";
 import type { SandboxHooks } from "./SandboxLifecycle.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
 import { hostSessionStore } from "./SessionStore.js";
@@ -147,7 +152,17 @@ export const buildCompletionMessage = (
  */
 export type LoggingOption =
   /** Write progress and agent output to a log file at the given path (log-to-file mode). */
-  | { readonly type: "file"; readonly path: string }
+  | {
+      readonly type: "file";
+      readonly path: string;
+      /**
+       * Optional callback invoked for each agent stream event (text chunk or
+       * tool call) in addition to being written to the log file. Intended for
+       * forwarding the agent's output stream to external observability
+       * systems. Errors thrown by the callback are swallowed.
+       */
+      readonly onAgentStreamEvent?: (event: AgentStreamEvent) => void;
+    }
   /** Render progress and agent output as an interactive UI in the terminal (terminal mode). */
   | { readonly type: "stdout" };
 
@@ -379,10 +394,16 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
     ),
   );
 
+  const agentStreamEmitterLayer =
+    resolvedLogging.type === "file" && resolvedLogging.onAgentStreamEvent
+      ? callbackAgentStreamEmitterLayer(resolvedLogging.onAgentStreamEvent)
+      : noopAgentStreamEmitterLayer;
+
   const runLayer = Layer.mergeAll(
     factoryLayer,
     displayLayer,
     defaultSessionPathsLayer,
+    agentStreamEmitterLayer,
   );
 
   const baseEffect = Effect.gen(function* () {

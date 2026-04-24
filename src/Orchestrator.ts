@@ -1,4 +1,5 @@
 import { Deferred, Effect } from "effect";
+import { AgentStreamEmitter } from "./AgentStreamEmitter.js";
 import { Display } from "./Display.js";
 import { preprocessPrompt } from "./PromptPreprocessor.js";
 import {
@@ -223,13 +224,14 @@ export const orchestrate = (
 ): Effect.Effect<
   OrchestrateResult,
   SandboxError,
-  SandboxFactory | Display | SessionPaths
+  SandboxFactory | Display | SessionPaths | AgentStreamEmitter
 > => {
   const idleTimeoutMs =
     (options.idleTimeoutSeconds ?? DEFAULT_IDLE_TIMEOUT_SECONDS) * 1000;
   return Effect.gen(function* () {
     const factory = yield* SandboxFactory;
     const display = yield* Display;
+    const streamEmitter = yield* AgentStreamEmitter;
     const { hostProjectsDir, sandboxProjectsDir } = yield* SessionPaths;
     const { hostRepoDir, iterations, hooks, prompt, branch, provider } =
       options;
@@ -312,6 +314,14 @@ export const orchestrate = (
                 // chunks are displayed as readable multi-word lines.
                 const textBuffer = new TextDeltaBuffer((chunk) => {
                   Effect.runPromise(display.text(chunk));
+                  Effect.runPromise(
+                    streamEmitter.emit({
+                      type: "text",
+                      message: chunk,
+                      iteration: i,
+                      timestamp: new Date(),
+                    }),
+                  );
                 });
                 const onText = (text: string) => {
                   textBuffer.write(text);
@@ -319,6 +329,15 @@ export const orchestrate = (
                 const onToolCall = (name: string, formattedArgs: string) => {
                   textBuffer.flush();
                   Effect.runPromise(display.toolCall(name, formattedArgs));
+                  Effect.runPromise(
+                    streamEmitter.emit({
+                      type: "toolCall",
+                      name,
+                      formattedArgs,
+                      iteration: i,
+                      timestamp: new Date(),
+                    }),
+                  );
                 };
                 const onIdleWarning = (minutes: number) => {
                   const msg =

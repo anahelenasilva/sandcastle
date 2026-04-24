@@ -189,7 +189,17 @@ const result = await run({
   copyToWorktree: [".env"],
 
   // How to record progress. Default: write to a file under .sandcastle/logs/
-  logging: { type: "file", path: ".sandcastle/logs/my-run.log" },
+  logging: {
+    type: "file",
+    path: ".sandcastle/logs/my-run.log",
+    // Optional: forward the agent's output stream to your own observability system.
+    // Fires for each text chunk and tool call the agent produces. Errors thrown
+    // by the callback are swallowed so a broken forwarder cannot kill the run.
+    onAgentStreamEvent: (event) => {
+      // event is { type: "text" | "toolCall", iteration, timestamp, ... }
+      myLogger.info(event);
+    },
+  },
   // logging: { type: "stdout" }, // OR render an interactive UI in the terminal
 
   // String (or array of strings) the agent emits to end the iteration loop early.
