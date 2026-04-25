@@ -26,6 +26,7 @@ import type {
 import { runHostHooks, type SandboxHooks } from "./SandboxLifecycle.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
+import { patchGitMountsForWindows } from "./mountUtils.js";
 
 export interface ExecResult {
   readonly stdout: string;
@@ -143,9 +144,8 @@ export interface SandboxInfo {
   readonly hostWorktreePath?: string;
   /** Absolute path to the worktree inside the sandbox, as reported by the provider. */
   readonly sandboxRepoPath: string;
-  /** Sync changes from the sandbox to the host worktree.
-   *  For isolated providers, runs syncOut. For bind-mount providers, this is a no-op. */
-  readonly applyToHost: () => Effect.Effect<void, SyncError>;
+  /** Sync changes from the sandbox to the host worktree (isolated providers only). */
+  readonly applyToHost?: () => Effect.Effect<void, SyncError>;
   /** The bind-mount sandbox handle, available when the provider is a bind-mount provider. Used for session capture. */
   readonly bindMountHandle?: BindMountSandboxHandle;
 }
@@ -433,6 +433,21 @@ export const WorktreeDockerSandboxFactory = {
                   }) as E | SandboxError,
               ),
               Effect.flatMap((gitMounts) =>
+                // Patch git mounts for Windows worktree compatibility (ADR-0006)
+                Effect.tryPromise({
+                  try: () =>
+                    patchGitMountsForWindows(
+                      gitMounts,
+                      hostRepoDir,
+                      SANDBOX_REPO_DIR,
+                    ),
+                  catch: (e) =>
+                    new WorktreeError({
+                      message: `Failed to patch git mounts: ${e instanceof Error ? e.message : String(e)}`,
+                    }),
+                }),
+              ),
+              Effect.flatMap((gitMounts) =>
                 Effect.acquireUseRelease(
                   startSandbox({
                     provider: sandboxProvider,
@@ -447,7 +462,6 @@ export const WorktreeDockerSandboxFactory = {
                     makeEffect({
                       hostWorktreePath: hostRepoDir,
                       sandboxRepoPath: worktreePath,
-                      applyToHost: () => Effect.void,
                       bindMountHandle: handle as BindMountSandboxHandle,
                     }).pipe(Effect.provide(sandboxLayer)) as Effect.Effect<
                       A,
@@ -506,6 +520,21 @@ export const WorktreeDockerSandboxFactory = {
                         message: `Failed to resolve git mounts: ${e}`,
                       }),
                   ),
+                  // Patch git mounts for Windows worktree compatibility (ADR-0006)
+                  Effect.flatMap((gitMounts) =>
+                    Effect.tryPromise({
+                      try: () =>
+                        patchGitMountsForWindows(
+                          gitMounts,
+                          worktreeInfo.path,
+                          SANDBOX_REPO_DIR,
+                        ),
+                      catch: (e) =>
+                        new WorktreeError({
+                          message: `Failed to patch git mounts: ${e instanceof Error ? e.message : String(e)}`,
+                        }),
+                    }),
+                  ),
                   Effect.flatMap(
                     (
                       gitMounts,
@@ -538,7 +567,6 @@ export const WorktreeDockerSandboxFactory = {
               makeEffect({
                 hostWorktreePath: worktreeInfo.path,
                 sandboxRepoPath: worktreePath,
-                applyToHost: () => Effect.void,
                 bindMountHandle: handle as BindMountSandboxHandle,
               }).pipe(Effect.provide(sandboxLayer)) as Effect.Effect<
                 A,

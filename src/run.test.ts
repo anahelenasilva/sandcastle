@@ -1,12 +1,14 @@
-import { readFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   buildCompletionMessage,
+  buildContextWindowLines,
   buildLogFilename,
   buildRunSummaryRows,
   DEFAULT_MAX_ITERATIONS,
+  formatContextWindowSize,
   printFileDisplayStartup,
   run,
   sanitizeBranchForFilename,
@@ -648,6 +650,59 @@ describe("promptFile resolution with cwd", () => {
   });
 });
 
+describe("inline prompt passthrough", () => {
+  it("errors when promptArgs is passed alongside an inline prompt", async () => {
+    await expect(
+      run({
+        agent: claudeCode("claude-opus-4-6"),
+        sandbox: testSandbox,
+        prompt: "do the work",
+        branchStrategy: { type: "head" },
+        promptArgs: { ISSUE_NUMBER: "42" },
+      }),
+    ).rejects.toThrow("promptArgs is only supported with promptFile");
+  });
+
+  it("does not error on inline prompts that contain literal {{KEY}} text (issue #453)", async () => {
+    // Before the fix, this would fail with "Prompt argument \"{{BRANCH}}\" has no
+    // matching value". With inline passthrough, {{KEY}} is delivered literally
+    // and substitution is skipped entirely, so no scan happens.
+    //
+    // The run still fails (fake sandbox can't actually run the agent) but the
+    // failure must not be a prompt-substitution error.
+    const promise = run({
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "Issue body mentions {{BRANCH}} in its content.",
+      branchStrategy: { type: "head" },
+    });
+
+    await promise.catch((err: Error) => {
+      expect(err.message).not.toContain("matching value in promptArgs");
+      expect(err.message).not.toContain("{{BRANCH}}");
+    });
+  });
+
+  it("accepts inline prompt with empty promptArgs ({})", async () => {
+    // Spreading `...opts` where `opts.promptArgs` defaults to {} is a common
+    // pattern. An empty args object is semantically the same as "not provided"
+    // and must not trigger the inline-prompt guard.
+    const promise = run({
+      agent: claudeCode("claude-opus-4-6"),
+      sandbox: testSandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      promptArgs: {},
+    });
+
+    await promise.catch((err: Error) => {
+      expect(err.message).not.toContain(
+        "promptArgs is only supported with promptFile",
+      );
+    });
+  });
+});
+
 describe("run() error logging to file", () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;
 
@@ -661,12 +716,14 @@ describe("run() error logging to file", () => {
   it("writes SandboxError to log file when using file logging", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sandcastle-run-error-"));
     const logPath = join(dir, "test.log");
+    const promptFile = join(dir, "prompt.md");
+    writeFileSync(promptFile, "test prompt");
 
     await expect(
       run({
         agent: claudeCode("claude-opus-4-6"),
         sandbox: testSandbox,
-        prompt: "test prompt",
+        promptFile,
         branchStrategy: { type: "head" },
         promptArgs: { SOURCE_BRANCH: "override" },
         logging: { type: "file", path: logPath },
@@ -681,16 +738,176 @@ describe("run() error logging to file", () => {
   it("still propagates the error as a rejected promise", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sandcastle-run-error-"));
     const logPath = join(dir, "test.log");
+    const promptFile = join(dir, "prompt.md");
+    writeFileSync(promptFile, "test prompt");
 
     await expect(
       run({
         agent: claudeCode("claude-opus-4-6"),
         sandbox: testSandbox,
-        prompt: "test prompt",
+        promptFile,
         branchStrategy: { type: "head" },
         promptArgs: { SOURCE_BRANCH: "override" },
         logging: { type: "file", path: logPath },
       }),
     ).rejects.toThrow("SOURCE_BRANCH");
+  });
+});
+
+describe("formatContextWindowSize", () => {
+  it("rounds up to the nearest 1000 tokens", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 102400,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("103k");
+  });
+
+  it("returns exact k value when total is a multiple of 1000", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 100000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("100k");
+  });
+
+  it("rounds 100001 up to 101k", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 100001,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("101k");
+  });
+
+  it("rounds 1 up to 1k", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 1,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("1k");
+  });
+
+  it("rounds 999 up to 1k", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 999,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("1k");
+  });
+
+  it("returns 1k for exactly 1000", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 1000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("1k");
+  });
+
+  it("rounds 1001 up to 2k", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 1001,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("2k");
+  });
+
+  it("sums inputTokens, cacheCreationInputTokens, and cacheReadInputTokens", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 50000,
+        cacheCreationInputTokens: 25000,
+        cacheReadInputTokens: 25000,
+        outputTokens: 9999,
+      }),
+    ).toBe("100k");
+  });
+
+  it("rounds 99500 up to 100k", () => {
+    expect(
+      formatContextWindowSize({
+        inputTokens: 99500,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        outputTokens: 0,
+      }),
+    ).toBe("100k");
+  });
+});
+
+describe("buildContextWindowLines", () => {
+  it("returns one line per iteration with usage data", () => {
+    const lines = buildContextWindowLines([
+      {
+        usage: {
+          inputTokens: 50000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          outputTokens: 1000,
+        },
+      },
+      {
+        usage: {
+          inputTokens: 100000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          outputTokens: 2000,
+        },
+      },
+    ]);
+    expect(lines).toEqual(["Context window: 50k", "Context window: 100k"]);
+  });
+
+  it("skips iterations without usage data", () => {
+    const lines = buildContextWindowLines([
+      {
+        usage: {
+          inputTokens: 50000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          outputTokens: 1000,
+        },
+      },
+      {},
+      {
+        usage: {
+          inputTokens: 100000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          outputTokens: 2000,
+        },
+      },
+    ]);
+    expect(lines).toEqual(["Context window: 50k", "Context window: 100k"]);
+  });
+
+  it("returns empty array when no iterations have usage", () => {
+    const lines = buildContextWindowLines([{}, {}, {}]);
+    expect(lines).toEqual([]);
+  });
+
+  it("returns empty array for empty iterations list", () => {
+    const lines = buildContextWindowLines([]);
+    expect(lines).toEqual([]);
   });
 });

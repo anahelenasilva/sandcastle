@@ -243,6 +243,69 @@ describe("WorktreeManager.create", () => {
     await run(remove(path));
   });
 
+  it("creates a new branch from baseBranch when specified", async () => {
+    const repoDir = await setupRepo();
+
+    // Create a second commit on main so HEAD differs from the base
+    await commitFile(repoDir, "second.txt", "second", "second commit");
+
+    // Record the first commit's SHA (the one before "second commit")
+    const { stdout: baseSha } = await execAsync("git rev-parse HEAD~1", {
+      cwd: repoDir,
+    });
+
+    const { path, branch } = await run(
+      create(repoDir, {
+        branch: "feature/from-base",
+        baseBranch: baseSha.trim(),
+      }),
+    );
+
+    expect(branch).toBe("feature/from-base");
+    expect(await getBranch(path)).toBe("feature/from-base");
+
+    // The worktree should be at the base commit, not HEAD
+    const { stdout: worktreeHead } = await execAsync("git rev-parse HEAD", {
+      cwd: path,
+    });
+    expect(worktreeHead.trim()).toBe(baseSha.trim());
+
+    await run(remove(path));
+  });
+
+  it("ignores baseBranch when the branch already exists", async () => {
+    const repoDir = await setupRepo();
+
+    // Create a branch with a known commit
+    await execAsync("git checkout -b existing-branch", { cwd: repoDir });
+    await commitFile(repoDir, "on-branch.txt", "x", "branch commit");
+    const { stdout: branchHead } = await execAsync("git rev-parse HEAD", {
+      cwd: repoDir,
+    });
+    await execAsync("git checkout main", { cwd: repoDir });
+
+    // Add another commit on main to use as baseBranch
+    await commitFile(repoDir, "main2.txt", "y", "main commit 2");
+    const { stdout: mainHead } = await execAsync("git rev-parse HEAD", {
+      cwd: repoDir,
+    });
+
+    // baseBranch should be ignored since existing-branch already exists
+    const { path } = await run(
+      create(repoDir, {
+        branch: "existing-branch",
+        baseBranch: mainHead.trim(),
+      }),
+    );
+
+    const { stdout: worktreeHead } = await execAsync("git rev-parse HEAD", {
+      cwd: path,
+    });
+    expect(worktreeHead.trim()).toBe(branchHead.trim());
+
+    await run(remove(path));
+  });
+
   it("reuses worktree with unpushed commits (not considered dirty)", async () => {
     const repoDir = await setupRepo();
     await execAsync("git checkout -b my-branch", { cwd: repoDir });
@@ -267,6 +330,50 @@ describe("WorktreeManager.create", () => {
     // "main" is the currently checked-out branch in the main working tree
     const err = await runFail(create(repoDir, { branch: "main" }));
     expect(err.message).toMatch(/already checked out/i);
+  });
+
+  it("does not write upstream tracking config even when autoSetupMerge is enabled", async () => {
+    const repoDir = await setupRepo();
+
+    // Enable the config that triggers .git/config writes during branch creation
+    await execAsync("git config branch.autoSetupMerge always", {
+      cwd: repoDir,
+    });
+
+    const { path, branch } = await run(
+      create(repoDir, { branch: "sandcastle/no-tracking-test" }),
+    );
+
+    // If -c branch.autoSetupMerge=false is working, the new branch should
+    // have no upstream tracking config (no branch.<name>.remote or .merge)
+    const { stdout: trackingConfig } = await execAsync(
+      `git config --get-regexp "branch\\.sandcastle/no-tracking-test\\." || true`,
+      { cwd: repoDir },
+    );
+    expect(trackingConfig.trim()).toBe("");
+
+    await run(remove(path));
+  });
+
+  it("does not write upstream tracking config for temp branches when autoSetupMerge is enabled", async () => {
+    const repoDir = await setupRepo();
+
+    // Enable the config that triggers .git/config writes during branch creation
+    await execAsync("git config branch.autoSetupMerge always", {
+      cwd: repoDir,
+    });
+
+    const { path, branch } = await run(create(repoDir));
+
+    // The temp branch should also have no upstream tracking config
+    const escapedBranch = branch.replace(/\//g, "\\/").replace(/\./g, "\\.");
+    const { stdout: trackingConfig } = await execAsync(
+      `git config --get-regexp "branch\\.${escapedBranch}\\." || true`,
+      { cwd: repoDir },
+    );
+    expect(trackingConfig.trim()).toBe("");
+
+    await run(remove(path));
   });
 });
 

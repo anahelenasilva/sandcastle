@@ -189,7 +189,17 @@ const result = await run({
   copyToWorktree: [".env"],
 
   // How to record progress. Default: write to a file under .sandcastle/logs/
-  logging: { type: "file", path: ".sandcastle/logs/my-run.log" },
+  logging: {
+    type: "file",
+    path: ".sandcastle/logs/my-run.log",
+    // Optional: forward the agent's output stream to your own observability system.
+    // Fires for each text chunk and tool call the agent produces. Errors thrown
+    // by the callback are swallowed so a broken forwarder cannot kill the run.
+    onAgentStreamEvent: (event) => {
+      // event is { type: "text" | "toolCall", iteration, timestamp, ... }
+      myLogger.info(event);
+    },
+  },
   // logging: { type: "stdout" }, // OR render an interactive UI in the terminal
 
   // String (or array of strings) the agent emits to end the iteration loop early.
@@ -478,6 +488,10 @@ You must provide exactly one of:
 
 `prompt` and `promptFile` are mutually exclusive — providing both is an error. If neither is provided, `run()` throws an error asking you to supply one.
 
+**Inline prompts (`prompt: "..."`) are passed to the agent literally.** No `{{KEY}}` substitution, no `` !`command` `` expansion, no built-in `{{SOURCE_BRANCH}}` / `{{TARGET_BRANCH}}` injection. If you need values interpolated into an inline prompt, build the string in JavaScript (`` `Work on ${branch}…` ``). Passing `promptArgs` alongside an inline prompt is an error — switch to `promptFile` to use substitution.
+
+The substitution and expansion features below apply **only** to prompts sourced from `promptFile`.
+
 > **Convention**: `sandcastle init` scaffolds `.sandcastle/prompt.md` and all templates explicitly reference it via `promptFile: ".sandcastle/prompt.md"`. This is a convention, not an automatic fallback — Sandcastle does not read `.sandcastle/prompt.md` unless you pass it as `promptFile`.
 
 ### Dynamic context with `` !`command` ``
@@ -524,6 +538,8 @@ Prompt argument substitution runs on the host before shell expression expansion,
 ```
 
 A `{{KEY}}` placeholder with no matching prompt argument is an error. Unused prompt arguments produce a warning.
+
+`` !`command` `` expansion only runs on shell blocks written in the prompt file itself. Any `` !`…` `` pattern that appears inside an argument value is treated as inert text — it won't be executed against the host shell. This makes it safe to pass user-authored content (issue titles, PR descriptions, docs excerpts) through `promptArgs`.
 
 ### Built-in prompt arguments
 
