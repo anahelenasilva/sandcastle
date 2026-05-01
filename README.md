@@ -30,7 +30,7 @@ Sandcastle is provider-agnostic — it ships with built-in providers for Docker,
 1. Install the package:
 
 ```bash
-npm install @ai-hero/sandcastle
+npm install --save-dev @ai-hero/sandcastle
 ```
 
 2. Run `sandcastle init`. This scaffolds a `.sandcastle` directory with all the files needed.
@@ -188,6 +188,12 @@ const result = await run({
   // Not supported with branchStrategy: { type: "head" }.
   copyToWorktree: [".env"],
 
+  // Override default timeouts for built-in lifecycle steps.
+  // Unset keys keep their defaults.
+  timeouts: {
+    copyToWorktreeMs: 120_000, // default: 60_000
+  },
+
   // How to record progress. Default: write to a file under .sandcastle/logs/
   logging: {
     type: "file",
@@ -296,6 +302,7 @@ if (closeResult.preservedWorktreePath) {
 | `cwd`            | string          | `process.cwd()` | Host repo directory — relative paths resolve against `process.cwd()` |
 | `hooks`          | SandboxHooks    | —               | Lifecycle hooks (`host.*`, `sandbox.*`) — run once at creation time  |
 | `copyToWorktree` | string[]        | —               | Host-relative file paths to copy into the sandbox at creation time   |
+| `timeouts`       | Timeouts        | —               | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)     |
 
 #### `Sandbox`
 
@@ -398,6 +405,7 @@ await sandbox.close();
 | ---------------- | ---------------------- | ------- | ------------------------------------------------------------------------- |
 | `branchStrategy` | WorktreeBranchStrategy | —       | **Required.** `{ type: "branch", branch }` or `{ type: "merge-to-head" }` |
 | `copyToWorktree` | string[]               | —       | Host-relative file paths to copy into the worktree at creation time       |
+| `timeouts`       | Timeouts               | —       | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)          |
 
 #### `Worktree`
 
@@ -462,6 +470,7 @@ await sandbox.close();
 | `sandbox`        | SandboxProvider | —       | **Required.** Sandbox provider (e.g. `docker()`)                    |
 | `hooks`          | SandboxHooks    | —       | Lifecycle hooks (`host.*`, `sandbox.*`)                             |
 | `copyToWorktree` | string[]        | —       | Host-relative file paths to copy into the worktree at creation time |
+| `timeouts`       | Timeouts        | —       | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)    |
 
 ## How it works
 
@@ -674,6 +683,7 @@ Removes the Podman image.
 | `idleTimeoutSeconds` | number             | `600`                         | Idle timeout in seconds — resets on each agent output event                                                                                                     |
 | `resumeSession`      | string             | —                             | Resume a prior Claude Code session by ID. Incompatible with `maxIterations > 1`. Session file must exist on host.                                               |
 | `signal`             | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`. |
+| `timeouts`           | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps. Currently supports `{ copyToWorktreeMs?: number }` (default: 60 000).                                   |
 
 ### `RunResult`
 
@@ -1124,7 +1134,7 @@ hooks: {
   },
   sandbox: {
     onSandboxReady: [
-      { command: "npm install" },
+      { command: "npm install", timeoutMs: 300_000 },
       { command: "apt-get install -y ffmpeg", sudo: true },
     ],
   },
@@ -1139,8 +1149,9 @@ hooks: {
 
 **Ordering:** `copyToWorktree` -> `host.onWorktreeReady` (sequential) -> sandbox created -> `host.onSandboxReady` + `sandbox.onSandboxReady` (parallel).
 
-- **Host hooks** accept `{ command: string }` — no `sudo`, no `cwd`. Use `cd` or inline env in the command string.
-- **Sandbox hooks** accept `{ command: string; sudo?: boolean }` — set `sudo: true` for elevated privileges.
+- **Host hooks** accept `{ command: string; timeoutMs?: number }` — no `sudo`, no `cwd`. Use `cd` or inline env in the command string.
+- **Sandbox hooks** accept `{ command: string; sudo?: boolean; timeoutMs?: number }` — set `sudo: true` for elevated privileges.
+- **`timeoutMs`** overrides the default 60 s per-hook timeout. Useful for long-running setup commands like dependency installs (e.g. `timeoutMs: 300_000` for 5 minutes).
 - Within each hook point, sandbox hooks run in parallel; host hooks within `onSandboxReady` also run in parallel with sandbox hooks. `host.onWorktreeReady` hooks run sequentially in declared order.
 - If any hook exits non-zero, setup fails fast.
 - When a `signal` is passed to `run()`, it is threaded to all hooks — aborting the signal cancels any in-flight hook commands.

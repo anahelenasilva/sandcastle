@@ -166,9 +166,13 @@ export const create = (
     const worktreePath = join(worktreesDir, worktreeName);
 
     if (opts?.branch) {
-      // Proactively detect collision before git produces a confusing error
+      // Proactively detect collision before git produces a confusing error.
+      // Match by branch first; fall back to target path (covers mid-rebase
+      // detached-HEAD state where the branch field is null).
       const existing = yield* listWorktrees(repoDir);
-      const collision = existing.find((wt) => wt.branch === branch);
+      const collision =
+        existing.find((wt) => wt.branch === branch) ??
+        existing.find((wt) => wt.path === worktreePath);
       if (collision) {
         // Only reuse worktrees managed by sandcastle (under .sandcastle/worktrees/)
         const isManagedWorktree = collision.path.startsWith(worktreesDir);
@@ -320,6 +324,14 @@ export const pruneStale = (
 
     if (entries === null) return;
 
+    // `git worktree list` canonicalizes paths via realpath. If repoDir or
+    // .sandcastle is a symlink, joining the un-canonicalized prefix produces
+    // strings that never match git's output, and every active worktree looks
+    // orphaned. Resolve the prefix once so the Set lookup below works.
+    const realWorktreesDir = yield* fs
+      .realPath(worktreesDir)
+      .pipe(Effect.catchAll(() => Effect.succeed(worktreesDir)));
+
     // Get the list of active worktree paths from git
     const worktreeList = yield* execGit(
       ["worktree", "list", "--porcelain"],
@@ -334,7 +346,7 @@ export const pruneStale = (
 
     // Remove any directory under .sandcastle/worktrees/ that is not an active worktree
     for (const entry of entries) {
-      const entryPath = join(worktreesDir, entry);
+      const entryPath = join(realWorktreesDir, entry);
       const isDir = yield* fs.stat(entryPath).pipe(
         Effect.map((s) => s.type === "Directory"),
         Effect.catchAll(() => Effect.succeed(false)),
